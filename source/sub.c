@@ -1,12 +1,15 @@
 // Bottom screen: 16bpp bitmap drawn in software
 #include "engine.h"
 
-static u16 *fb;
+static u16 *fb;      // RAM back buffer
+static u16 *vfb;     // VRAM
+static volatile bool subDirtyFlag;
 
 void sub_init(void) {
 	videoSetModeSub(MODE_5_2D);
 	int bg = bgInitSub(3, BgType_Bmp16, BgSize_B16_256x256, 0, 0);
-	fb = bgGetGfxPtr(bg);
+	vfb = bgGetGfxPtr(bg);
+	fb = malloc(256 * 192 * 2);
 	sub_clear(0x8000);
 }
 
@@ -14,10 +17,22 @@ u16 *sub_fb(void) { return fb; }
 
 void sub_clear(u16 color) {
 	u32 c = (color | 0x8000) | ((u32)(color | 0x8000) << 16);
-	dmaFillWords(c, fb, 256 * 192 * 2);
+	u32 *p = (u32 *)fb;
+	for (int i = 0; i < 256 * 192 / 2; i++) p[i] = c;
+	subDirtyFlag = true;
 }
 
+void sub_present(void) {
+	if (!subDirtyFlag) return;
+	DC_FlushRange(fb, 256 * 192 * 2);
+	dmaCopyWords(3, fb, vfb, 256 * 192 * 2);
+	subDirtyFlag = false;
+}
+
+void sub_mark(void) { subDirtyFlag = true; }
+
 void sub_fill(int x, int y, int w, int h, u16 color) {
+	subDirtyFlag = true;
 	if (x < 0) { w += x; x = 0; }
 	if (y < 0) { h += y; y = 0; }
 	if (x + w > 256) w = 256 - x;
@@ -30,13 +45,15 @@ void sub_fill(int x, int y, int w, int h, u16 color) {
 }
 
 static inline u16 blend15(u16 d, u16 s, int a) {
-	int r = ((s & 31) * a + (d & 31) * (31 - a)) / 31;
-	int g = (((s >> 5) & 31) * a + ((d >> 5) & 31) * (31 - a)) / 31;
-	int b = (((s >> 10) & 31) * a + ((d >> 10) & 31) * (31 - a)) / 31;
+	a += a >> 4;                 // 0..31 -> 0..32
+	int r = ((s & 31) * a + (d & 31) * (32 - a)) >> 5;
+	int g = (((s >> 5) & 31) * a + ((d >> 5) & 31) * (32 - a)) >> 5;
+	int b = (((s >> 10) & 31) * a + ((d >> 10) & 31) * (32 - a)) >> 5;
 	return r | (g << 5) | (b << 10) | 0x8000;
 }
 
 void sub_fill_blend(int x, int y, int w, int h, u16 color, int a) {
+	subDirtyFlag = true;
 	if (x < 0) { w += x; x = 0; }
 	if (y < 0) { h += y; y = 0; }
 	if (x + w > 256) w = 256 - x;
@@ -65,6 +82,7 @@ void img_free(Img16 *img) {
 }
 
 void sub_blit(const Img16 *img, int x, int y) {
+	subDirtyFlag = true;
 	if (!img->px) return;
 	for (int j = 0; j < img->h; j++) {
 		int yy = y + j;
@@ -81,6 +99,7 @@ void sub_blit(const Img16 *img, int x, int y) {
 
 // multiplies the image by a tint color, only the first clipw columns
 void sub_blit_tint(const Img16 *img, int x, int y, int clipw, u16 tint) {
+	subDirtyFlag = true;
 	if (!img->px) return;
 	int tr = tint & 31, tg = (tint >> 5) & 31, tb = (tint >> 10) & 31;
 	if (clipw > img->w) clipw = img->w;
@@ -101,6 +120,7 @@ void sub_blit_tint(const Img16 *img, int x, int y, int clipw, u16 tint) {
 }
 
 void sub_text(int fid, int x, int y, const char *s, u16 color) {
+	subDirtyFlag = true;
 	Font *f = font_get(fid);
 	if (!f->alpha) font_load(fid, false);
 	if (!f->alpha) return;

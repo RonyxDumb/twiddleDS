@@ -17,6 +17,7 @@ static Block freeList[96];
 static int nFree;
 static u32 chrNext;
 static u32 palNext;
+void shader_unregister(u32 addr);
 
 // ---------------------------------------------------------------------------
 // VRAM allocators
@@ -245,6 +246,7 @@ bool sheet_load(Sheet *s, const SheetDef *d, bool shaded) {
 
 void sheet_unload(Sheet *s) {
 	if (!s->loaded) return;
+	if (s->shaded) shader_unregister(s->palAddr);
 	for (int i = 0; i < s->def->nTex; i++) tex_free(s->texOff[i], s->def->tex[i].size);
 	if (s->palOrig) free(s->palOrig);
 	s->palOrig = NULL;
@@ -283,7 +285,7 @@ void sheet_draw_rect(Sheet *s, int frame, float x0, float y0, float x1, float y1
 // "scary" shader emulated through palettes:
 //   rgb = ((rgb - 0.5) * strength + 0.5) * (1 - darkness)
 // ---------------------------------------------------------------------------
-typedef struct { u16 *orig; u32 addr; int count; } ShadePal;
+typedef struct { u16 *orig; u32 addr; int count; float alpha; } ShadePal;
 static ShadePal shadePals[16];
 static int nShade;
 static u16 shadeBuf[16][256];
@@ -295,10 +297,50 @@ void shader_clear(void) { nShade = 0; shStrength = 1; shDarkness = 0; }
 
 static void shader_build(int idx) {
 	ShadePal *p = &shadePals[idx];
+	u8 la[32];
+	const u8 *l = lut;
+	if (p->alpha < 0.999f) {
+		for (int i = 0; i < 32; i++) {
+			float v = i / 31.0f * p->alpha;
+			v = ((v - 0.5f) * (shStrength > 0 ? shStrength : 0) + 0.5f);
+			v = clampf(v, 0, 1) * (1 - shDarkness);
+			la[i] = (u8)clampf(v * 31.0f + 0.5f, 0, 31);
+		}
+		l = la;
+	}
 	for (int i = 0; i < p->count; i++) {
 		u16 c = p->orig[i];
-		shadeBuf[idx][i] = lut[c & 31] | (lut[(c >> 5) & 31] << 5) | (lut[(c >> 10) & 31] << 10);
+		shadeBuf[idx][i] = l[c & 31] | (l[(c >> 5) & 31] << 5) | (l[(c >> 10) & 31] << 10);
 	}
+}
+
+int shader_last(void) { return nShade - 1; }
+
+void shader_unregister(u32 addr) {
+	for (int i = 0; i < nShade; i++) {
+		if (shadePals[i].addr == addr) {
+			for (int j = i; j < nShade - 1; j++) {
+				shadePals[j] = shadePals[j + 1];
+				memcpy(shadeBuf[j], shadeBuf[j + 1], sizeof(shadeBuf[0]));
+			}
+			nShade--;
+			return;
+		}
+	}
+}
+
+int shader_find(u32 addr) {
+	for (int i = 0; i < nShade; i++)
+		if (shadePals[i].addr == addr) return i;
+	return -1;
+}
+
+void shader_set_alpha(int idx, float a) {
+	if (idx < 0 || idx >= nShade) return;
+	if (fabsf(shadePals[idx].alpha - a) < 0.004f) return;
+	shadePals[idx].alpha = a;
+	shader_build(idx);
+	shadeDirty = true;
 }
 
 static void shader_lut(void) {
@@ -315,6 +357,7 @@ void shader_register(u16 *orig, u32 palAddr, int count) {
 	shadePals[nShade].orig = orig;
 	shadePals[nShade].addr = palAddr;
 	shadePals[nShade].count = count > 256 ? 256 : count;
+	shadePals[nShade].alpha = 1;
 	nShade++;
 	shader_lut();
 	shader_build(nShade - 1);

@@ -14,19 +14,35 @@ static u32 cbufSize;
 static u16 pal[256];
 static int bgid = -1;
 static int blendEva = 16;
+static bool ovVisible = true;
+static int winX0, winX1;
 
 static void video_regs(void) {
 	if (!active) {
 		bgHide(bgid);
+		REG_DISPCNT &= ~DISPLAY_WIN0_ON;
+		BG_PALETTE[0] = 0;
 		REG_BLDCNT = BLEND_ALPHA | BLEND_SRC_BG0 | BLEND_DST_BACKDROP;
 		REG_BLDALPHA = 16 | (0 << 8);
 		return;
 	}
 	if (overlay) {
 		bgSetPriority(bgid, 0);
+		if (!ovVisible) bgHide(bgid);
+		else if (!pending) bgShow(bgid);
+		if (winX0 < winX1) {
+			REG_DISPCNT |= DISPLAY_WIN0_ON;
+			WIN0_X0 = winX0;
+			WIN0_X1 = winX1 > 255 ? 255 : winX1;
+			WIN0_Y0 = 0;
+			WIN0_Y1 = 192;
+			*(vu16 *)0x04000048 = (1 << 0) | (1 << 2) | (1 << 5);   // WININ: BG0, BG2, effects
+			*(vu16 *)0x0400004A = (1 << 0) | (1 << 5);              // WINOUT: BG0, effects
+		} else REG_DISPCNT &= ~DISPLAY_WIN0_ON;
 		REG_BLDCNT = BLEND_ALPHA | BLEND_SRC_BG2 | BLEND_DST_BG0 | BLEND_DST_BACKDROP;
 		REG_BLDALPHA = blendEva | (16 << 8);
 	} else {
+		REG_DISPCNT &= ~DISPLAY_WIN0_ON;
 		bgSetPriority(bgid, 2);
 		REG_BLDCNT = BLEND_ALPHA | BLEND_SRC_BG0 | BLEND_DST_BG2 | BLEND_DST_BACKDROP;
 		REG_BLDALPHA = 16 | (0 << 8);
@@ -120,8 +136,8 @@ void video_vblank(void) {
 			for (int y = 0; y < vh; y++) dmaCopy(frame + y * vw, dst + y * 256, vw);
 		}
 		pending = false;
-		video_regs();
 		bgShow(bgid);
+		video_regs();
 	}
 }
 
@@ -136,4 +152,19 @@ void video_set_affine(float pa, float px, float py) {
 void video_set_blend(int eva) {
 	blendEva = eva;
 	if (active && overlay) REG_BLDALPHA = blendEva | (16 << 8);
+}
+
+void video_set_overlay_visible(bool on) {
+	if (on == ovVisible) return;
+	ovVisible = on;
+	if (active && overlay) video_regs();
+}
+
+void video_set_window(int x0, int x1) {
+	if (x0 < 0) x0 = 0;
+	if (x1 > 256) x1 = 256;
+	if (x0 == winX0 && x1 == winX1) return;
+	winX0 = x0;
+	winX1 = x1;
+	if (active && overlay) video_regs();
 }

@@ -72,6 +72,9 @@ void gfx_quad_raw(int x0, int y0, int x1, int y1, int u0, int v0, int u1, int v1
 void shader_set(float strength, float darkness);
 void shader_register(u16 *orig, u32 palAddr, int count);
 void shader_clear(void);
+int shader_last(void);
+int shader_find(u32 palAddr);                  // index of the last registered palette
+void shader_set_alpha(int idx, float a);  // premultiplied alpha (layer over black)
 
 // character texture streaming
 void gfx_queue_upload(u32 texOff, const u8 *src, int w4, int h, int stride);
@@ -89,6 +92,7 @@ void font_draw_centered(int id, float cx, float y, const char *s, u16 color, int
 // ---------------------------------------------------------------------------
 typedef struct { u16 w, h; u16 *px; } Img16;
 void sub_init(void);
+void sub_present(void);                 // copy back buffer to VRAM (vblank)
 u16 *sub_fb(void);
 void sub_clear(u16 color);
 void sub_fill(int x, int y, int w, int h, u16 color);
@@ -129,6 +133,8 @@ bool video_update(float ms);            // returns false when finished
 void video_vblank(void);
 void video_set_affine(float pa, float px, float py);
 void video_set_blend(int eva);
+void video_set_overlay_visible(bool on);
+void video_set_window(int x0, int x1);   // x0 >= x1 disables
 float video_duration(void);
 
 // ---------------------------------------------------------------------------
@@ -156,7 +162,7 @@ extern bool touchDown;
 // ---------------------------------------------------------------------------
 // settings
 // ---------------------------------------------------------------------------
-typedef struct { bool downscroll; bool ghostTapping; int noteOffset; bool camZooms; } Settings;
+typedef struct { bool downscroll; bool ghostTapping; int noteOffset; bool camZooms; bool botplay; } Settings;
 extern Settings settings;
 void settings_load(void);
 void settings_save(void);

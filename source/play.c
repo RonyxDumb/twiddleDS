@@ -26,6 +26,7 @@ static const u32 laneKeys[4] = { KEY_LEFT | KEY_Y, KEY_DOWN | KEY_B, KEY_UP | KE
 // state
 // ---------------------------------------------------------------------------
 static Sheet shSky, shStage, shTree, shOg, shHud, shEnd;
+static int skyShade = -1;
 static Character chars[CHR_COUNT];
 static Character *bf, *dad;
 static Cam cam;
@@ -190,6 +191,7 @@ static void move_camera_section(void) {
 	move_camera(!chart_sections[sec]);
 }
 
+static int sky_shade_index(void);
 static float health_percent(void) { return health / 2.0f * 100.0f; }
 
 static u16 battery_color(void) {
@@ -199,6 +201,8 @@ static u16 battery_color(void) {
 	if (health >= 0.5f) return RGB(0xCA, 0x54, 0x27);
 	return RGB(0xCD, 0x33, 0x23);
 }
+
+static int sky_shade_index(void) { return shader_find(shSky.palAddr); }
 
 // ---------------------------------------------------------------------------
 // tween callbacks
@@ -247,6 +251,7 @@ static void red_mode(void);
 
 static void on_video_end(void) {
 	int k = vidKind;
+	subDirty = true;
 	stop_video();
 	if (k == VID_LYRICS) {
 		flash_other(RGB(255, 255, 255), 1);
@@ -365,6 +370,8 @@ static void run_event(const EventDef *e) {
 		break;
 	}
 	case EV_TWEENOUT1:
+		sheet_unload(&shOg);
+
 		change_bf(CHR_NUGGET);
 		change_dad(CHR_MAXPRO);
 		skyA = stageA = treeA = 1;
@@ -407,6 +414,7 @@ static void run_event(const EventDef *e) {
 		helpBarsVisible = false;
 		hereVisible = false;
 		forcedPos = false;
+		subDirty = true;
 		play_video(succeeded ? "nitro:/vid/lyrics_good.vid" : "nitro:/vid/lyrics_bad.vid", VID_LYRICS);
 		break;
 	case EV_SUBS:
@@ -432,6 +440,10 @@ static void run_event(const EventDef *e) {
 		tween_num(&hudFadeA, 0, 1, 1, EASE_LINEAR, 0, NULL, NULL);
 		break;
 	case EV_FADEIMG:
+		// the game camera is hidden from here on: free VRAM for the end image
+		sheet_unload(&shOg);
+		sheet_unload(&shStage);
+		sheet_unload(&shTree);
 		if (succeeded) {
 			endImg = 1;
 			sheet_load(&shEnd, &sheet_goodend, false);
@@ -548,13 +560,17 @@ static void update_notes(void) {
 			}
 			continue;
 		}
+		if (settings.botplay && n->state == 0 && pos >= n->t) {
+			good_note_hit(n);
+			continue;
+		}
 		if (n->state == 0 && pos > n->t + SAFE_ZONE) {
 			n->state = 3;
 			note_miss(n, n->pieces);
 			continue;
 		}
 		if (n->state == 1) {
-			bool held = (kHeld & laneKeys[n->dir]) != 0;
+			bool held = settings.botplay || (kHeld & laneKeys[n->dir]) != 0;
 			while (n->nextPiece <= n->pieces && pos >= n->t + STEP * n->nextPiece - SAFE_ZONE * 0.5f) {
 				if (!held) break;
 				health += HIT_HEALTH;
@@ -653,7 +669,7 @@ static void draw_sub(void) {
 	sub_text_centered(FONT_VCR, 128, 138, b, RGB(220, 220, 220));
 	snprintf(b, sizeof(b), "Sick %d  Good %d  Bad %d  Shit %d", hits[0], hits[1], hits[2], hits[3]);
 	sub_text_centered(FONT_VCR, 128, 156, b, RGB(170, 170, 170));
-	sub_text_centered(FONT_VCR, 128, 178, "START: pause", RGB(120, 120, 120));
+	sub_text_centered(FONT_VCR, 128, 178, settings.botplay ? "BOTPLAY - START: pause" : "START: pause", RGB(120, 120, 120));
 }
 
 // ---------------------------------------------------------------------------
@@ -680,6 +696,7 @@ void play_enter(void) {
 	g_fade = 1;
 	audio_stop();
 	sheet_load(&shSky, &sheet_sky, true);
+	skyShade = shader_last();
 	sheet_load(&shStage, &sheet_stage, true);
 	sheet_load(&shTree, &sheet_tree, true);
 	sheet_load(&shOg, &sheet_og, true);
@@ -966,14 +983,14 @@ void play_update(float dt) {
 	// strum confirm -> static (opponent style reset is not used for the player)
 	for (int d = 0; d < 4; d++) {
 		strumTime[d] += dt;
-		if (strumAnim[d] == 2 && !(kHeld & laneKeys[d]) && strumTime[d] > 0.15f) strumAnim[d] = 0;
+		if (strumAnim[d] == 2 && (settings.botplay || !(kHeld & laneKeys[d])) && strumTime[d] > 0.15f) strumAnim[d] = 0;
 	}
 
 	// boyfriend returns to idle when not holding
 	{
 		bool holding = false;
 		for (int d = 0; d < 4; d++) if (kHeld & laneKeys[d]) holding = true;
-		if (!holding && bf->holdTimer > STEP * 0.0011f * bf->def->singDur && !strncmp(chr_anim_name(bf), "sing", 4))
+		if ((!holding || settings.botplay) && bf->holdTimer > STEP * 0.0011f * bf->def->singDur && !strncmp(chr_anim_name(bf), "sing", 4))
 			chr_dance(bf);
 	}
 
@@ -1015,8 +1032,15 @@ void play_update(float dt) {
 		cam.shakeY = ((rand() % 2001) / 1000.0f - 1) * amp * 0.5625f;
 	} else cam.shakeX = cam.shakeY = 0;
 
-	// shader palettes
+	// shader palettes (the sky is drawn opaque with its alpha premultiplied)
 	shader_set(shStrength, shDarkness);
+
+	shader_set_alpha(sky_shade_index(), skyA);
+	// fire overlay belongs to camGame: hide it behind the tiktok camera / HUD fade
+	video_set_overlay_visible(!tiktokBlack && hudFadeA < 0.95f && endImg == 0);
+	if (helpBarsVisible && helpBarA > 0.5f)
+		video_set_window((int)oth_x(helpBarTX + 1280 / 3.0f), (int)oth_x(helpBarBX));
+	else video_set_window(0, 0);
 
 	// videos
 	if (vidKind != VID_NONE) {
@@ -1024,7 +1048,7 @@ void play_update(float dt) {
 		if (!ok) on_video_end();
 		else if (vidKind == VID_FIRE) {
 			// fire sprite: (0,0) world, width = sky width, scrollFactor 1.1
-			float s = 128.0f / STAGE_SKY_W;
+			float s = 256.0f / STAGE_SKY_W;
 			float pa = s / (cam.zoom * KDS);
 			float wx0 = (0 - 128 - cam.shakeX) / (cam.zoom * KDS) + 640 + (cam.camX - 640) * 1.1f;
 			float wy0 = (0 - 96 - cam.shakeY) / (cam.zoom * KDS) + 360 + (cam.camY - 360) * 1.1f;
@@ -1144,7 +1168,7 @@ void play_draw(void) {
 		u16 white = 0x7FFF;
 		// sky
 		float k = cam.zoom * KDS;
-		sheet_draw(&shSky, SKY_MAIN, cam_sx(&cam, 0, 1), cam_sy(&cam, 0, 1), k, white, A31(skyA));
+		if (skyA > 0.004f) sheet_draw(&shSky, SKY_MAIN, cam_sx(&cam, 0, 1), cam_sy(&cam, 0, 1), k, white, 31);
 		sheet_draw(&shStage, STAGE_MAIN, cam_sx(&cam, 0, 1), cam_sy(&cam, 0, 1), k, white, A31(stageA));
 		if (fakeBgA > 0.01f) sheet_draw(&shOg, OG_MAIN, cam_sx(&cam, 2000, 1), cam_sy(&cam, 1200, 1), k, white, A31(fakeBgA));
 		chr_draw(dad, &cam, white);

@@ -3,7 +3,7 @@
 
 static int sel;
 static bool dirty;
-#define NOPT 5
+#define NOPT 6
 
 static const char *label(int i, char *buf) {
 	switch (i) {
@@ -11,6 +11,7 @@ static const char *label(int i, char *buf) {
 	case 1: sprintf(buf, "Ghost Tapping: %s", settings.ghostTapping ? "ON" : "OFF"); break;
 	case 2: sprintf(buf, "Camera Zooms: %s", settings.camZooms ? "ON" : "OFF"); break;
 	case 3: sprintf(buf, "Note Offset: %d ms", settings.noteOffset); break;
+	case 4: sprintf(buf, "Botplay: %s", settings.botplay ? "ON" : "OFF"); break;
 	default: sprintf(buf, "Back"); break;
 	}
 	return buf;
@@ -21,8 +22,8 @@ static void draw_sub(void) {
 	sub_text_centered(FONT_VCRBIG, 128, 10, "OPTIONS", RGB(255, 255, 255));
 	char buf[48];
 	for (int i = 0; i < NOPT; i++) {
-		int y = 44 + i * 26;
-		if (i == sel) sub_fill(16, y - 4, 224, 22, RGB(0xF4, 0xA6, 0x7A));
+		int y = 40 + i * 22;
+		if (i == sel) sub_fill(16, y - 4, 224, 20, RGB(0xF4, 0xA6, 0x7A));
 		sub_text_centered(FONT_VCR, 128, y + 2, label(i, buf), RGB(255, 255, 255));
 	}
 	sub_text_centered(FONT_VCR, 128, 178, "A: change  LEFT/RIGHT: adjust  B: back", RGB(170, 170, 170));
@@ -50,7 +51,8 @@ static void change(int dir) {
 		if (settings.noteOffset > 500) settings.noteOffset = 500;
 		if (settings.noteOffset < -500) settings.noteOffset = -500;
 		break;
-	case 4:
+	case 4: settings.botplay = !settings.botplay; break;
+	case 5:
 		if (dir == 0) {
 			audio_sfx(SFX_CANCELMENU, 0.7f);
 			state_switch(ST_MENU);
@@ -71,8 +73,8 @@ void options_update(float dt) {
 	if (kDown & KEY_TOUCH) {
 		touchRead(&touch);
 		for (int i = 0; i < NOPT; i++) {
-			int y = 44 + i * 26;
-			if (touch.py >= y - 4 && touch.py < y + 18) {
+			int y = 40 + i * 22;
+			if (touch.py >= y - 4 && touch.py < y + 16) {
 				sel = i;
 				change(i == 3 ? (touch.px < 128 ? -1 : 1) : 0);
 				dirty = true;
@@ -86,7 +88,7 @@ void options_draw(void) {
 	char buf[48];
 	font_draw_centered(FONT_VCRBIG, 128, 16, "OPTIONS", RGB(255, 255, 255), 31);
 	for (int i = 0; i < NOPT; i++) {
-		int y = 50 + i * 24;
+		int y = 44 + i * 22;
 		if (i == sel) gfx_rect(20, y - 3, 236, y + 15, RGB(0xF4, 0xA6, 0x7A), 20);
 		font_draw_centered(FONT_VCR, 128, y, label(i, buf), RGB(255, 255, 255), i == sel ? 31 : 18);
 	}

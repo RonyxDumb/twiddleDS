@@ -6,7 +6,7 @@
 u32 kDown, kHeld, kUp;
 touchPosition touch;
 bool touchDown;
-Settings settings = { false, true, 0, true };
+Settings settings = { false, true, 0, true, false };
 float g_fade = 0;
 
 static int curState = -1, nextState = -1;
@@ -39,6 +39,7 @@ void settings_load(void) {
 		settings.ghostTapping = b[3];
 		settings.camZooms = b[4];
 		settings.noteOffset = (s16)(b[5] | (b[6] << 8));
+		settings.botplay = b[7];
 	}
 	fclose(f);
 }
@@ -49,7 +50,7 @@ void settings_save(void) {
 	FILE *f = fopen(CFG_PATH, "wb");
 	if (!f) return;
 	u8 b[8] = {'T', 'W', settings.downscroll, settings.ghostTapping, settings.camZooms,
-		settings.noteOffset & 255, (settings.noteOffset >> 8) & 255, 0};
+		settings.noteOffset & 255, (settings.noteOffset >> 8) & 255, settings.botplay};
 	fwrite(b, 1, 8, f);
 	fclose(f);
 }
@@ -132,6 +133,7 @@ int main(int argc, char **argv) {
 		swiWaitForVBlank();
 		gfx_vblank();
 		video_vblank();
+		sub_present();
 		int b = (int)(clampf(g_fade, 0, 1) * 16);
 		REG_MASTER_BRIGHT = b ? ((2 << 14) | b) : 0;
 		REG_MASTER_BRIGHT_SUB = b ? ((2 << 14) | b) : 0;
