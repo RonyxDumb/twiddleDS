@@ -56,6 +56,7 @@ void menu_enter(void) {
 	faceVisible = true;
 	audio_play_music("nitro:/snd/menu.raw", true, 0.3f);
 	g_fade = 1;
+	g_subFade = 0;
 	tween_num(&g_fade, 1, 0, 0.4f, EASE_LINEAR, 0, NULL, NULL);
 	subDirty = true;
 }
@@ -74,6 +75,7 @@ static void accept(void) {
 	started = true;
 	subDirty = true;
 	audio_set_volume(0);
+	tween_num(&g_subFade, 0, 1, 1.0f, EASE_LINEAR, 0, NULL, NULL);
 	timer_after(2, step1, NULL);
 }
 
@@ -107,7 +109,8 @@ void menu_draw(void) {
 		gfx_rect(0, ly, 256, ly + 5 * k, RGB(0x24, 0x23, 0x20), 31);
 		sheet_draw(&sh, MENU_TITLE, 128, ((720 - MENU_TEXT_H) / 2 - 200 - 360) * k + 96, k, 0x7FFF, 31);
 		// buttons: 'i' = selected look
-		float bx = (-190 - 640) * k + 128, by = (0 - 360) * k + 96;
+		// centered button pair (start at x=434, options at x=650 on the 1280 px screen)
+		float bx = (-30 - 640) * k + 128, by = (0 - 360) * k + 96;
 		sheet_draw(&sh, optionNow ? MENU_START_S : MENU_START_I, bx, by, k, 0x7FFF, 31);
 		sheet_draw(&sh, optionNow ? MENU_OPTIONS_I : MENU_OPTIONS_S, bx, by, k, 0x7FFF, 31);
 	}

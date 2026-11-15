@@ -8,6 +8,7 @@ touchPosition touch;
 bool touchDown;
 Settings settings = { false, true, 0, true, false };
 float g_fade = 0;
+float g_subFade = 0;
 int perf_drops, perf_frames;
 u32 perf_t[6];
 #define PT(i, x) do { u32 _t = time_ticks(); x; _t = time_ticks() - _t; if (_t > perf_t[i]) perf_t[i] = _t; } while (0)
@@ -137,8 +138,9 @@ int main(int argc, char **argv) {
 		swiWaitForVBlank();
 		PT(3, gfx_vblank(); video_vblank(); sub_present());
 		int b = (int)(clampf(g_fade, 0, 1) * 16);
+		int bs = (int)(clampf(g_fade > g_subFade ? g_fade : g_subFade, 0, 1) * 16);
 		REG_MASTER_BRIGHT = b ? ((2 << 14) | b) : 0;
-		REG_MASTER_BRIGHT_SUB = b ? ((2 << 14) | b) : 0;
+		REG_MASTER_BRIGHT_SUB = bs ? ((2 << 14) | bs) : 0;
 		PT(4, audio_update());
 	}
 	return 0;

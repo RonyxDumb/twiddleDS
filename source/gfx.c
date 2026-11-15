@@ -9,7 +9,7 @@
 #include "engine.h"
 
 #define TEX_TOTAL   (384 * 1024)
-#define CHR_REGION  (64 * 1024)
+#define CHR_REGION  (80 * 1024)
 #define PAL_TOTAL   (16 * 1024)
 
 typedef struct { u32 off, size; } Block;

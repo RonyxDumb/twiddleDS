@@ -100,6 +100,7 @@ void sub_fill_blend(int x, int y, int w, int h, u16 color, int a32);
 bool img_load(Img16 *img, const char *path);
 void img_free(Img16 *img);
 void sub_blit(const Img16 *img, int x, int y);
+void sub_blit_flip(const Img16 *img, int x, int y);   // mirrored horizontally
 void sub_blit_tint(const Img16 *img, int x, int y, int clipw, u16 tint);
 void sub_text(int font, int x, int y, const char *s, u16 color);
 void sub_text_centered(int font, int cx, int y, const char *s, u16 color);
@@ -178,5 +179,6 @@ void play_enter(void); void play_update(float dt); void play_draw(void); void pl
 
 // main screen fade (0 = visible, 1 = black)
 extern float g_fade;
+extern float g_subFade;     // extra fade for the bottom screen only
 
 #include "soundbank.h"

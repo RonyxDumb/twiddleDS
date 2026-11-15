@@ -20,8 +20,10 @@ devkitARM) e usa gli asset originali della mod convertiti per il DS
 - **HELP = 👍**: quando appare il pulsante devi **toccare il touch screen**
   (al posto del click del mouse). Servono almeno 75 tocchi prima del "judge"
   per ottenere il finale buono.
-- Batteria (barra della vita) e icone come nella mod; schermo inferiore con
-  punteggio, errori, precisione.
+- Schermo inferiore come HUD: batteria (barra della vita) con le icone,
+  punteggio, errori, precisione; segue i fade dell'HUD della mod.
+- Prima parte della canzone con gli sprite cartoon (`max` e `nuggetog`), poi
+  il cambio a `nugget` / `maxpro` come nella mod.
 - **Pausa** (START): Resume / Restart Song / Exit to menu, con la musica "Tea Time".
 - Game over, ritorno al menu a fine canzone.
 - **Opzioni**: Downscroll, Ghost tapping, Camera zooms, Note offset, Botplay

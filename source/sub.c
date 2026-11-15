@@ -98,6 +98,22 @@ void sub_blit(const Img16 *img, int x, int y) {
 	}
 }
 
+void sub_blit_flip(const Img16 *img, int x, int y) {
+	subDirtyFlag = true;
+	if (!img->px) return;
+	for (int j = 0; j < img->h; j++) {
+		int yy = y + j;
+		if (yy < 0 || yy >= 192) continue;
+		const u16 *s = img->px + j * img->w;
+		u16 *d = fb + yy * 256;
+		for (int i = 0; i < img->w; i++) {
+			int xx = x + img->w - 1 - i;
+			if (xx < 0 || xx >= 256) continue;
+			if (s[i] & 0x8000) d[xx] = s[i];
+		}
+	}
+}
+
 // multiplies the image by a tint color, only the first clipw columns
 void sub_blit_tint(const Img16 *img, int x, int y, int clipw, u16 tint) {
 	subDirtyFlag = true;

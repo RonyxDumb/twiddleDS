@@ -686,7 +686,7 @@ static void draw_sub(void) {
 		sub_blit(&imgBar, bx, by);
 		sub_blit_tint(&imgBarW, bx + 11, by + 23, imgBarW.w, battery_color());
 		sub_blit(&imgIcons[icon_index(dad, hp > 80)], bx - 50, by + 2);
-		sub_blit(&imgIcons[icon_index(bf, hp < 20)], bx + imgBar.w - 6, by + 2);
+		sub_blit_flip(&imgIcons[icon_index(bf, hp < 20)], bx + imgBar.w - 6, by + 2);   // iconP1 is flipped
 	}
 	draw_score();
 	sub_text_centered(FONT_VCR, 128, 178, settings.botplay ? "BOTPLAY - START: pause" : "START: pause", RGB(120, 120, 120));
@@ -724,7 +724,7 @@ void play_enter(void) {
 	font_load(FONT_SUBS, true);
 	font_load(FONT_VCR, true);
 	font_load(FONT_VCRBIG, false);
-	for (int i = 0; i < CHR_COUNT; i++) chr_load(&chars[i], i, i != CHR_MAXPRO && i != CHR_REDMAX);
+	for (int i = 0; i < CHR_COUNT; i++) chr_load(&chars[i], i, i != CHR_MAXPRO && i != CHR_REDMAX && i != CHR_MAX);
 	for (int i = 0; i < CHR_COUNT; i++) {
 		bool player = chars[i].isPlayer;
 		chars[i].x = player ? BF_X : DAD_X;
@@ -739,8 +739,9 @@ void play_enter(void) {
 		snprintf(p, sizeof(p), "/sub/icon_%s_%d.b16", icn[i / 2], i % 2);
 		img_load(&imgIcons[i], p);
 	}
-	bf = &chars[CHR_NUGGET];
-	dad = &chars[CHR_MAXPRO];
+	// the song starts with the cartoon characters; tweenOut1 switches to nugget / maxpro
+	bf = &chars[CHR_NUGGETOG];
+	dad = &chars[CHR_MAX];
 	build_notes();
 
 	// state
@@ -814,6 +815,7 @@ void play_enter(void) {
 	subDirty = true;
 	subKey = -1;
 	g_fade = 0;
+	g_subFade = 1;     // camHUD starts invisible (introCam) and fades in with the song
 }
 
 void play_leave(void) {
@@ -889,6 +891,7 @@ static void update_pause(float dt) {
 
 static void die(void) {
 	dead = true;
+	g_subFade = 0;
 	deaths++;
 	deadTime = 0;
 	deadConfirm = false;
@@ -1080,6 +1083,16 @@ void play_update(float dt) {
 		}
 	}
 
+	// bottom screen = camHUD: follow its alpha / fade / visibility
+	{
+		float target = 1 - clampf(hudAlpha, 0, 1);
+		if (hudFadeA > target) target = hudFadeA;
+		if (!hudVisible) target = 1;
+		float step = dt / 0.6f;
+		if (g_subFade < target) g_subFade = g_subFade + step > target ? target : g_subFade + step;
+		else if (g_subFade > target) g_subFade = g_subFade - step < target ? target : g_subFade - step;
+	}
+
 	// health / death
 	if (health <= 0 && songStarted) {
 		health = 0;
@@ -1166,19 +1179,7 @@ static void draw_hud(void) {
 		if (n->state == 0 || n->state == 3)
 			draw_note_sprite(HUD_NOTE0 + n->dir * 10, cx, strumY + dy * dir, A31(a), 0x7FFF);
 	}
-	// battery + icons (uiGroup)
-	if (uiVisible) {
-		float ua = uiAlpha * ha;
-		float barX = (1280 - HPBAR_W) / 2, barY = settings.downscroll ? -50 : 720 - HPBAR_H + 50;
-		float k = hudZoom * KDS;
-		sheet_draw(&shHud, HUD_HPBAR, hud_x(barX), hud_y(barY), k, 0x7FFF, A31(ua));
-		sheet_draw(&shHud, HUD_BARWHITE, hud_x(barX + 22), hud_y(barY + 47), k, battery_color(), A31(ua));
-		float hp = health_percent();
-		int ip1 = HUD_ICON_NUG_0 + icon_index(bf, hp < 20);
-		int ip2 = HUD_ICON_NUG_0 + icon_index(dad, hp > 80);
-		sheet_draw(&shHud, ip1, hud_x(barX + HPBAR_W - 25), hud_y(barY + (HPBAR_H - 150) / 2 + 25), k, 0x7FFF, A31(ua));
-		sheet_draw(&shHud, ip2, hud_x(barX - 150 + 55), hud_y(barY + (HPBAR_H - 150) / 2 + 30), k, 0x7FFF, A31(ua));
-	}
+	// battery + icons are drawn only on the bottom screen
 	// help button
 	if (hereVisible && hereScale > 0.01f) {
 		float s = hereScale / 0.35f * hudZoom * KDS;

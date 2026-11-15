@@ -237,6 +237,8 @@ CHARS = [
     ('rednugget', 0.12),
     ('rednughat', 0.112),
     ('redmax', 0.07),
+    ('max', 0.12),          # intro (before tweenOut1)
+    ('nuggetog', 0.12),     # intro (before tweenOut1)
 ]
 ICONS = ['nug', 'nuggetcool', 'max', 'face']
 
@@ -382,26 +384,10 @@ def convert_hud():
             c = rgb_shader(crop_frame(img, f), i)
             cs = scaled(c, s)
             sh.add_packed('%s%d' % (nm, i), cs, -cs.width // 2, 0)
-    # battery bar
-    hp = Image.open(os.path.join(EX, 'images/hpbar.png')).convert('RGBA')
-    sh.add_packed('hpbar', scaled(hp, S_HUD))
-    bw = Image.open(os.path.join(EX, 'images/barwhiteohio.png')).convert('RGBA')
-    sh.add_packed('barwhite', scaled(bw, S_HUD))
-    # icons (2 frames each)
-    for ic in ICONS:
-        p = os.path.join(EX, 'images/icons', ic + '.png')
-        if not os.path.exists(p):
-            p = os.path.join(A, 'shared/images/icons/icon-' + ic + '.png')
-        im = Image.open(p).convert('RGBA')
-        for k in range(2):
-            fr = im.crop((k * 150, 0, k * 150 + 150, 150)) if im.width >= 300 else im
-            sh.add_packed('icon_%s_%d' % (ic, k), scaled(fr, S_HUD))
     here = Image.open(os.path.join(EX, 'images/here2.png')).convert('RGBA')
     hs = scaled(here, 0.35 * S_HUD)
     sh.add_packed('here', hs, -hs.width // 2, -hs.height // 2)
     sh.build()
-    H_OUT.append('#define HPBAR_W %s' % cfloat(hp.width))
-    H_OUT.append('#define HPBAR_H %s' % cfloat(hp.height))
     H_OUT.append('#define HERE_W %s' % cfloat(here.width * 0.35))
     H_OUT.append('#define HERE_H %s' % cfloat(here.height * 0.35))
 

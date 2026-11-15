@@ -36,6 +36,7 @@ void options_enter(void) {
 	font_load(FONT_VCRBIG, true);
 	audio_play_music("nitro:/snd/menu.raw", true, 0.3f);
 	g_fade = 0;
+	g_subFade = 0;
 	dirty = true;
 }
 

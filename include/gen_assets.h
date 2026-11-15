@@ -20,7 +20,7 @@ extern const SheetDef sheet_og;
 #define OG_MAIN 0
 #define STAGE_SKY_W 7130.25f
 #define STAGE_SKY_H 4365.0f
-enum { CHR_NUGGET, CHR_NUGGET_HAT, CHR_MAXPRO, CHR_REDNUGGET, CHR_REDNUGHAT, CHR_REDMAX, CHR_COUNT };
+enum { CHR_NUGGET, CHR_NUGGET_HAT, CHR_MAXPRO, CHR_REDNUGGET, CHR_REDNUGHAT, CHR_REDMAX, CHR_MAX, CHR_NUGGETOG, CHR_COUNT };
 extern const ChrDef *const chr_defs[];
 extern const SheetDef sheet_hud;
 #define HUD_STATIC0 0
@@ -71,19 +71,7 @@ extern const SheetDef sheet_hud;
 #define HUD_END2 45
 #define HUD_HOLD3 46
 #define HUD_END3 47
-#define HUD_HPBAR 48
-#define HUD_BARWHITE 49
-#define HUD_ICON_NUG_0 50
-#define HUD_ICON_NUG_1 51
-#define HUD_ICON_NUGGETCOOL_0 52
-#define HUD_ICON_NUGGETCOOL_1 53
-#define HUD_ICON_MAX_0 54
-#define HUD_ICON_MAX_1 55
-#define HUD_ICON_FACE_0 56
-#define HUD_ICON_FACE_1 57
-#define HUD_HERE 58
-#define HPBAR_W 357.0f
-#define HPBAR_H 100.0f
+#define HUD_HERE 48
 #define HERE_W 400.04999999999995f
 #define HERE_H 86.1f
 extern const SheetDef sheet_menu;
