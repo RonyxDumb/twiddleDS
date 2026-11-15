@@ -34,7 +34,7 @@ void options_enter(void) {
 	sel = 0;
 	font_load(FONT_VCR, true);
 	font_load(FONT_VCRBIG, true);
-	audio_play_music("nitro:/snd/menu.raw", true, 0.15f);
+	audio_play_music("nitro:/snd/menu.raw", true, 0.3f);
 	g_fade = 0;
 	dirty = true;
 }

@@ -54,7 +54,7 @@ void menu_enter(void) {
 	started = false;
 	faceA = eyeA = 0;
 	faceVisible = true;
-	audio_play_music("nitro:/snd/menu.raw", true, 0.15f);
+	audio_play_music("nitro:/snd/menu.raw", true, 0.3f);
 	g_fade = 1;
 	tween_num(&g_fade, 1, 0, 0.4f, EASE_LINEAR, 0, NULL, NULL);
 	subDirty = true;

@@ -28,6 +28,7 @@ static volatile u32 songSamples;         // samples consumed from the song
 static volatile u32 cbTicks;
 static bool songPaused;
 static float masterVol = 1.0f;
+volatile u32 dbg_under, dbg_cb, dbg_len;
 
 static inline u32 ticks_now(void) { return (u32)tickGetCount(); }
 
@@ -56,6 +57,7 @@ static mm_word stream_cb(mm_word length, mm_addr dest, mm_stream_formats format)
 			out[i] = s;
 		}
 		for (u32 i = n; i < length; i++) out[i] = 0;
+		dbg_under += length - n; dbg_cb++; dbg_len = length;
 		songSamples += n;
 		cbTicks = ticks_now();
 	} else if (m == M_MUSIC || m == M_PAUSE) {
@@ -170,6 +172,7 @@ void audio_play_song(void) {
 	track_fill(&tr[0], 8);
 	track_fill(&tr[1], 8);
 	songSamples = 0;
+	audio_set_volume(1);
 	vvol = 256;
 	cbTicks = ticks_now();
 	songPaused = false;

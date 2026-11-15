@@ -624,9 +624,38 @@ static int icon_index(const Character *c, bool losing) {
 	return c->def->icon * 2 + (losing ? 1 : 0);
 }
 
+// The bottom screen is redrawn in two levels: a full redraw when the layout
+// changes (mode, icons, battery colour) and a cheap partial redraw of the
+// score lines.
+static int subKey = -1;
+
+static void draw_score(void) {
+	sub_fill(0, 108, 256, 68, RGB(12, 8, 10));
+	char b[64];
+	float accp = totalPlayed > 0 ? totalHit / totalPlayed * 100 : 0;
+	snprintf(b, sizeof(b), "Score: %d", score);
+	sub_text_centered(FONT_VCRBIG, 128, 112, b, RGB(255, 255, 255));
+	snprintf(b, sizeof(b), "Misses: %d   Accuracy: %d.%02d%%", misses, (int)accp, (int)(accp * 100) % 100);
+	sub_text_centered(FONT_VCR, 128, 138, b, RGB(220, 220, 220));
+	snprintf(b, sizeof(b), "Sick %d  Good %d  Bad %d  Shit %d", hits[0], hits[1], hits[2], hits[3]);
+	sub_text_centered(FONT_VCR, 128, 156, b, RGB(170, 170, 170));
+#ifdef DEBUG_PERF
+	{ extern int perf_drops, perf_frames; extern volatile u32 dbg_under, dbg_cb, dbg_len; snprintf(b, sizeof(b), "dr %d un %d cb %d len %d", perf_drops, (int)dbg_under, (int)dbg_cb, (int)dbg_len); sub_text(FONT_VCR, 2, 166, b, RGB(255, 255, 0)); }
+#endif
+}
+
 static void draw_sub(void) {
+	int mode = paused ? 1 : dead ? 2 : (helpMode || (hereVisible && hereScale > 0.05f)) ? 3 : 0;
+	float hp = health_percent();
+	int key = mode | (pauseSel << 2) | ((lastTapFrame > 0) << 4) | (uiVisible << 5) |
+		(icon_index(dad, hp > 80) << 6) | (icon_index(bf, hp < 20) << 10) | ((int)battery_color() << 14);
+	if (key == subKey && mode == 0) {
+		draw_score();
+		return;
+	}
+	subKey = key;
 	sub_clear(RGB(12, 8, 10));
-	if (paused) {
+	if (mode == 1) {
 		sub_text_centered(FONT_VCRBIG, 128, 12, "PAUSED", RGB(255, 255, 255));
 		static const char *items[3] = { "Resume", "Restart Song", "Exit to menu" };
 		for (int i = 0; i < 3; i++) {
@@ -639,36 +668,27 @@ static void draw_sub(void) {
 		sub_text_centered(FONT_VCR, 128, 176, b, RGB(180, 180, 180));
 		return;
 	}
-	if (dead) {
+	if (mode == 2) {
 		sub_text_centered(FONT_VCRBIG, 128, 40, "GAME OVER", RGB(255, 80, 80));
 		sub_text_centered(FONT_VCR, 128, 100, "A: retry", RGB(255, 255, 255));
 		sub_text_centered(FONT_VCR, 128, 120, "B: exit to menu", RGB(255, 255, 255));
 		return;
 	}
-	if (helpMode || (hereVisible && hereScale > 0.05f)) {
+	if (mode == 3) {
 		sub_text_centered(FONT_VCRBIG, 128, 16, "TAP TO HELP HIM!", RGB(255, 255, 255));
 		int flash = (lastTapFrame > 0);
 		sub_blit(&imgHere, (256 - imgHere.w) / 2 + (flash ? 2 : 0), 70 + (flash ? 2 : 0));
 		return;
 	}
 	sub_text_centered(FONT_VCRBIG, 128, 6, "TWIDDLEFINGER", RGB(255, 255, 255));
-	// battery
 	if (uiVisible) {
 		int bx = (256 - imgBar.w) / 2, by = 46;
 		sub_blit(&imgBar, bx, by);
 		sub_blit_tint(&imgBarW, bx + 11, by + 23, imgBarW.w, battery_color());
-		float hp = health_percent();
 		sub_blit(&imgIcons[icon_index(dad, hp > 80)], bx - 50, by + 2);
 		sub_blit(&imgIcons[icon_index(bf, hp < 20)], bx + imgBar.w - 6, by + 2);
 	}
-	char b[64];
-	float accp = totalPlayed > 0 ? totalHit / totalPlayed * 100 : 0;
-	snprintf(b, sizeof(b), "Score: %d", score);
-	sub_text_centered(FONT_VCRBIG, 128, 112, b, RGB(255, 255, 255));
-	snprintf(b, sizeof(b), "Misses: %d   Accuracy: %d.%02d%%", misses, (int)accp, (int)(accp * 100) % 100);
-	sub_text_centered(FONT_VCR, 128, 138, b, RGB(220, 220, 220));
-	snprintf(b, sizeof(b), "Sick %d  Good %d  Bad %d  Shit %d", hits[0], hits[1], hits[2], hits[3]);
-	sub_text_centered(FONT_VCR, 128, 156, b, RGB(170, 170, 170));
+	draw_score();
 	sub_text_centered(FONT_VCR, 128, 178, settings.botplay ? "BOTPLAY - START: pause" : "START: pause", RGB(120, 120, 120));
 }
 
@@ -792,6 +812,7 @@ void play_enter(void) {
 	gameFadeA = 1;
 
 	subDirty = true;
+	subKey = -1;
 	g_fade = 0;
 }
 
@@ -1044,7 +1065,10 @@ void play_update(float dt) {
 
 	// videos
 	if (vidKind != VID_NONE) {
+		extern u32 perf_t[6];
+		u32 _t0 = time_ticks();
 		bool ok = video_update(songPos - vidStart);
+		{ u32 _d = time_ticks() - _t0; if (_d > perf_t[5]) perf_t[5] = _d; }
 		if (!ok) on_video_end();
 		else if (vidKind == VID_FIRE) {
 			// fire sprite: (0,0) world, width = sky width, scrollFactor 1.1
@@ -1063,7 +1087,7 @@ void play_update(float dt) {
 		return;
 	}
 
-	if (subDirty && ++subTimer >= 3) {
+	if (subDirty && ++subTimer >= 12) {
 		draw_sub();
 		subDirty = false;
 		subTimer = 0;

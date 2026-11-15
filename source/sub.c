@@ -1,5 +1,6 @@
 // Bottom screen: 16bpp bitmap drawn in software
 #include "engine.h"
+#pragma GCC target("arm")
 
 static u16 *fb;      // RAM back buffer
 static u16 *vfb;     // VRAM
@@ -101,7 +102,7 @@ void sub_blit(const Img16 *img, int x, int y) {
 void sub_blit_tint(const Img16 *img, int x, int y, int clipw, u16 tint) {
 	subDirtyFlag = true;
 	if (!img->px) return;
-	int tr = tint & 31, tg = (tint >> 5) & 31, tb = (tint >> 10) & 31;
+	int tr = (tint & 31) + 1, tg = ((tint >> 5) & 31) + 1, tb = ((tint >> 10) & 31) + 1;
 	if (clipw > img->w) clipw = img->w;
 	for (int j = 0; j < img->h; j++) {
 		int yy = y + j;
@@ -113,7 +114,7 @@ void sub_blit_tint(const Img16 *img, int x, int y, int clipw, u16 tint) {
 			if (xx < 0 || xx >= 256) continue;
 			u16 c = s[i];
 			if (!(c & 0x8000)) continue;
-			int r = (c & 31) * tr / 31, g = ((c >> 5) & 31) * tg / 31, b = ((c >> 10) & 31) * tb / 31;
+			int r = ((c & 31) * tr) >> 5, g = (((c >> 5) & 31) * tg) >> 5, b = (((c >> 10) & 31) * tb) >> 5;
 			d[xx] = r | (g << 5) | (b << 10) | 0x8000;
 		}
 	}

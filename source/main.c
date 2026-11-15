@@ -8,6 +8,9 @@ touchPosition touch;
 bool touchDown;
 Settings settings = { false, true, 0, true, false };
 float g_fade = 0;
+int perf_drops, perf_frames;
+u32 perf_t[6];
+#define PT(i, x) do { u32 _t = time_ticks(); x; _t = time_ticks() - _t; if (_t > perf_t[i]) perf_t[i] = _t; } while (0)
 
 static int curState = -1, nextState = -1;
 static bool fatOk;
@@ -112,13 +115,14 @@ int main(int argc, char **argv) {
 		u32 now = time_ticks();
 		float dt = (now - lastTicks) / (float)TICK_FREQ;
 		lastTicks = now;
+		if (curState == ST_PLAY) { perf_frames++; if (dt > 1.5f / 59.83f) perf_drops += (int)(dt * 59.83f + 0.5f) - 1; }
 		if (dt > 0.1f) dt = 0.1f;
 		if (dt < 0.001f) dt = 1.0f / 60;
 
 		switch (curState) {
 		case ST_MENU: menu_update(dt); break;
 		case ST_OPTIONS: options_update(dt); break;
-		case ST_PLAY: play_update(dt); break;
+		case ST_PLAY: PT(0, play_update(dt)); break;
 		}
 		tween_update(dt);
 
@@ -126,18 +130,16 @@ int main(int argc, char **argv) {
 		switch (curState) {
 		case ST_MENU: menu_draw(); break;
 		case ST_OPTIONS: options_draw(); break;
-		case ST_PLAY: play_draw(); break;
+		case ST_PLAY: PT(1, play_draw()); break;
 		}
-		gfx_frame_end();
+		PT(2, gfx_frame_end());
 
 		swiWaitForVBlank();
-		gfx_vblank();
-		video_vblank();
-		sub_present();
+		PT(3, gfx_vblank(); video_vblank(); sub_present());
 		int b = (int)(clampf(g_fade, 0, 1) * 16);
 		REG_MASTER_BRIGHT = b ? ((2 << 14) | b) : 0;
 		REG_MASTER_BRIGHT_SUB = b ? ((2 << 14) | b) : 0;
-		audio_update();
+		PT(4, audio_update());
 	}
 	return 0;
 }
