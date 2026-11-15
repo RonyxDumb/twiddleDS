@@ -11,6 +11,10 @@ on:
         description: 'Tag of the release to publish (e.g. v1.0.0), empty = build only'
         required: false
         default: ''
+      notes:
+        description: 'Short changelog for the release'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -43,10 +47,6 @@ jobs:
           name: Twiddlefinger DS ${{ github.event.inputs.release_tag || github.ref_name }}
           files: TwiddlefingerDS.nds
           body: |
-            Port per Nintendo DS della mod di Friday Night Funkin' **Twiddlefinger**.
+            Nintendo DS port of the FNF mod Twiddlefinger. Play `TwiddlefingerDS.nds` on a flashcart or in melonDS.
 
-            **Come giocare:** copia `TwiddlefingerDS.nds` sulla SD della flashcart (TWiLight Menu++ / nds-bootstrap) oppure aprilo con **melonDS**. DeSmuME non è supportato.
-
-            **Controlli:** D-pad oppure Y/B/X/A per le frecce, START per la pausa, touch screen per il pulsante HELP (servono 75 tocchi per il finale buono).
-
-            Tutti gli asset appartengono agli autori della mod Twiddlefinger e di Friday Night Funkin'. Progetto fan-made non ufficiale.
+            ${{ github.event.inputs.notes }}

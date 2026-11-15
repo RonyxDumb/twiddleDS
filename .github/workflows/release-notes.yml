@@ -1,0 +1,28 @@
+name: Edit release notes
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+      notes:
+        description: 'Short changelog'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  edit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag }}
+          NOTES: ${{ github.event.inputs.notes }}
+        run: |
+          printf 'Nintendo DS port of the FNF mod Twiddlefinger. Play `TwiddlefingerDS.nds` on a flashcart or in melonDS.\n\n%s\n' "$NOTES" > notes.md
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "Twiddlefinger DS $TAG" --notes-file notes.md
