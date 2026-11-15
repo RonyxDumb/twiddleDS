@@ -6,6 +6,10 @@ This is not HaxeFlixel running on a DS. The game was rewritten from scratch in C
 
 A prebuilt ROM is available on the [Releases](../../releases) page.
 
+| Menu | Gameplay | Lyrics cutscene |
+| :---: | :---: | :---: |
+| ![Menu](docs/screenshots/menu.png) | ![Gameplay](docs/screenshots/gameplay.png) | ![Lyrics cutscene](docs/screenshots/lyrics.png) |
+
 ## Playing
 
 Copy `TwiddlefingerDS.nds` to your flashcart (TWiLight Menu++ / nds-bootstrap) or open it in **melonDS**. DeSmuME is not supported.
