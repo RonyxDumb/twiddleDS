@@ -66,10 +66,12 @@ void sheet_draw_ex(Sheet *s, int frame, float x, float y, float sx, float sy, u1
 // stretched part of frame: (u0..u1, v0..v1 in [0,1]) to a screen rect
 void sheet_draw_rect(Sheet *s, int frame, float x0, float y0, float x1, float y1, float fv0, float fv1, u16 color, int alpha);
 void gfx_rect(float x0, float y0, float x1, float y1, u16 color, int alpha);
+void gfx_rect_grad(float x0, float y0, float x1, float y1, u16 top, u16 bottom, int alpha);
 void gfx_quad_raw(int x0, int y0, int x1, int y1, int u0, int v0, int u1, int v1, u32 tex, u32 pal, u16 color, int alpha);
 
 // shader palettes ("scary" shader: contrast strength + darkness)
 void shader_set(float strength, float darkness);
+void shader_set_tint(float r, float g, float b);   // per channel gain on the shaded palettes
 void shader_register(u16 *orig, u32 palAddr, int count);
 void shader_clear(void);
 int shader_last(void);
@@ -136,6 +138,7 @@ void video_set_affine(float pa, float px, float py);
 void video_set_blend(int eva);
 void video_set_overlay_visible(bool on);
 void video_set_window(int x0, int x1);   // x0 >= x1 disables
+void video_set_wave(float amp, float phase);   // per-scanline heat haze on the overlay (HBlank DMA), amp in screen px
 float video_duration(void);
 
 // ---------------------------------------------------------------------------

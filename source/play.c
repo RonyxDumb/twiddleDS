@@ -34,7 +34,8 @@ static float followX, followY;
 static float defaultZoom, hudZoom, defaultHudZoom = 0.8f;
 static bool camZooming, forcedPos;
 static float beatsPerZoom = 4;
-static int zoomTween;
+static int zoomTween;                // FlxTween.num that also drives defaultCamZoom
+static int camTween;                 // FlxTween on FlxG.camera.zoom only (defaultCamZoom untouched)
 static float zoomTweenVal;
 static float shakeTime;
 
@@ -42,6 +43,24 @@ static float shakeTime;
 static float skyA, stageA, treeA, fakeBgA;
 static float shStrength, shDarkness;
 static bool fireOn;
+
+// DS-only fire effects: warm palette light, beat pulse, heat haze on the
+// fire layer (HBlank DMA), rising embers and a Gouraud glow from the street
+#define EMBERS 48
+// fixed point (no FPU on the ARM9): positions in 1/16 px, speeds in 1/16 px per second,
+// life in ms, phase as an index into a 64 entry sine table
+typedef struct { s32 x, y; s16 vx, vy; u16 life, max; u8 phase, size; } Ember;
+static Ember embers[EMBERS];
+static float fireFx;                 // 0..1 intensity of the extra effects
+static float firePulse;              // beat pulse, decays
+static float fireTime;
+static float lastCamX, lastCamY;
+static u32 fireMs;
+static const s8 sin64s[64] = {
+	0, 12, 25, 37, 49, 60, 71, 81, 90, 98, 106, 112, 117, 122, 125, 126,
+	127, 126, 125, 122, 117, 112, 106, 98, 90, 81, 71, 60, 49, 37, 25, 12,
+	0, -12, -25, -37, -49, -60, -71, -81, -90, -98, -106, -112, -117, -122, -125, -126,
+	-127, -126, -125, -122, -117, -112, -106, -98, -90, -81, -71, -60, -49, -37, -25, -12 };
 
 
 // hud
@@ -237,14 +256,91 @@ static void start_fire(void) {
 	if (video_open("nitro:/vid/fire.vid", true, true)) {
 		vidKind = VID_FIRE;
 		vidStart = songPos;
-		video_set_blend(5);     // alpha 0.3, additive
+		video_set_blend(8);     // mod: alpha 0.3 additive *before* the dark shader; on DS it is added after it
 		fireOn = true;
+		tween_cancel_target(&fireFx);
+		tween_to(&fireFx, 1, 0.6f, EASE_SINEOUT, 0, NULL, NULL);
+		firePulse = 1;
+	}
+}
+
+static void ember_spawn(Ember *e, bool anywhere) {
+	e->x = (rand() % 256) << 4;
+	e->y = anywhere ? (rand() % 192) << 4 : (192 + rand() % 10) << 4;
+	e->vx = (rand() % 320) - 160;
+	e->vy = -(288 + rand() % 640);
+	e->max = 2500 + rand() % 3000;
+	e->life = anywhere ? rand() % e->max : 0;
+	e->phase = rand() & 63;
+	e->size = 1 + (rand() % 3 == 0);
+}
+
+static void fire_fx_update(float dt) {
+	if ((!fireOn || vidKind != VID_FIRE) && fireFx > 0) {
+		tween_cancel_target(&fireFx);
+		fireFx = 0;
+	}
+	firePulse *= expf(-dt * 5);
+	fireTime += dt;
+	int dms = (int)(dt * 1000);
+	fireMs += dms;
+	// embers live in screen space: follow the camera with a bit of parallax
+	s32 camDX = (s32)((cam.camX - lastCamX) * cam.zoom * KDS * 1.3f * 16);
+	s32 camDY = (s32)((cam.camY - lastCamY) * cam.zoom * KDS * 1.3f * 16);
+	lastCamX = cam.camX;
+	lastCamY = cam.camY;
+	if (fireFx <= 0) return;
+	int boost = 256 + (int)(firePulse * 205);       // rise faster on the beat (8.8)
+	int swayT = (fireMs * 23 / 1000) & 63;            // ~0.37 Hz sway
+	for (int i = 0; i < EMBERS; i++) {
+		Ember *e = &embers[i];
+		e->life += dms;
+		if (e->life >= e->max || e->y < -64) { ember_spawn(e, false); continue; }
+		int sway = sin64s[(swayT + e->phase) & 63] * 224 / 127;   // +-14 px/s
+		e->x += (e->vx + sway) * dms / 1000 - camDX;
+		e->y += (e->vy * boost >> 8) * dms / 1000 - camDY;
+		if (e->x < -64) e->x += 264 << 4;
+		if (e->x > 260 << 4) e->x -= 264 << 4;
+	}
+	// heat haze on the fire layer, stronger on the beat
+	video_set_wave((1.2f + firePulse * 1.6f) * fireFx, fireTime * 0.9f);
+	video_set_blend(8 + (int)(firePulse * 6 * fireFx + 0.5f));
+}
+
+static void fire_fx_draw(void) {
+	if (fireFx <= 0.01f) return;
+	// warm glow rising from the street (vertex colours), pulsing with the beat
+	int ga = (int)((6 + firePulse * 6) * fireFx);
+	// two stacked gradients over the whole screen, so there is no visible edge
+	gfx_rect_grad(0, 0, 256, 96, RGB(40, 0, 0), RGB(150, 30, 0), ga);
+	gfx_rect_grad(0, 96, 256, 192, RGB(150, 30, 0), RGB(255, 110, 20), ga);
+	// embers: white-hot -> orange -> deep red as they cool
+	int fx = (int)(fireFx * 256);
+	int flickT = (fireMs * 173 / 1000) & 63;          // ~2.7 Hz flicker
+	for (int i = 0; i < EMBERS; i++) {
+		Ember *e = &embers[i];
+		int t = e->life * 256 / e->max;                // 0..255
+		u16 c = t < 64 ? RGB(255, 240, 150) : t < 154 ? RGB(255, 150, 40) : RGB(220, 50, 10);
+		int a = t < 26 ? t * 31 / 26 : 31 - (t - 26) * 31 / 230;
+		a = a * (224 + sin64s[(flickT + e->phase * 5) & 63] / 4) >> 8;
+		a = a * fx >> 8;
+		int sz = (e->size * 16 * (256 - t * 2 / 5) >> 8) + 8;     // 1/16 px
+		int x0 = e->x - sz / 2, y0 = e->y - sz / 2;
+		gfx_quad_raw(x0, y0, x0 + sz, y0 + sz, 0, 0, 0, 0, 0, 0, c, a);
 	}
 }
 
 static void stop_video(void) {
 	video_close();
 	vidKind = VID_NONE;
+}
+
+static void fire_fx_reset(void) {
+	fireFx = firePulse = fireTime = 0;
+	fireMs = 0;
+	for (int i = 0; i < EMBERS; i++) ember_spawn(&embers[i], true);
+	lastCamX = cam.camX;
+	lastCamY = cam.camY;
 }
 
 static void red_mode(void);
@@ -349,6 +445,8 @@ static void run_event(const EventDef *e) {
 	case EV_BEGIN:
 		tween_cancel_target(&followX);
 		tween_cancel_target(&followY);
+		tween_cancel(camTween);
+		camTween = 0;
 		tween_cancel(zoomTween);
 		zoomTween = 0;
 		forcedPos = false;
@@ -361,8 +459,8 @@ static void run_event(const EventDef *e) {
 		tween_to(&bf->x, bf->x + 700, d, EASE_CUBEOUT, 0, NULL, NULL);
 		tween_cancel(zoomTween);
 		zoomTween = 0;
-		zoomTweenVal = cam.zoom;
-		zoomTween = tween_num(&zoomTweenVal, cam.zoom, cam.zoom + 0.3f, d, EASE_CUBEINOUT, 0, NULL, NULL);
+		tween_cancel_target(&cam.zoom);
+		camTween = tween_num(&cam.zoom, cam.zoom, cam.zoom + 0.3f, d, EASE_CUBEINOUT, 0, NULL, NULL);
 		tween_to(&hudAlpha, 0.5f, d, EASE_CUBEINOUT, 0, NULL, NULL);
 		tween_to(&fakeBgA, 0, d + 0.1f, EASE_LINEAR, 0, NULL, NULL);
 		tween_to(&helpBarTX, -1280 / 3.0f, d + 0.1f, EASE_LINEAR, 0, NULL, NULL);
@@ -380,8 +478,9 @@ static void run_event(const EventDef *e) {
 		tween_cancel_target(&hudAlpha);
 		tween_to(&hudAlpha, 1, 0.15f, EASE_CUBEOUT, 0, NULL, NULL);
 		tween_cancel(zoomTween);
-		zoomTweenVal = cam.zoom;
-		zoomTween = tween_num(&zoomTweenVal, cam.zoom, defaultZoom, 0.15f, EASE_CUBEOUT, 0, NULL, NULL);
+		zoomTween = 0;
+		tween_cancel_target(&cam.zoom);
+		camTween = tween_num(&cam.zoom, cam.zoom, defaultZoom, 0.15f, EASE_CUBEOUT, 0, NULL, NULL);
 		break;
 	case EV_BEATSPERZOOM:
 		beatsPerZoom = e->a;
@@ -401,6 +500,7 @@ static void run_event(const EventDef *e) {
 		start_fire();
 		flash_game(RGB(255, 0, 0), 0.4f);
 		cam.zoom += 0.2f;
+		shakeTime = 0.35f;       // DS extra: impact shake when the street catches fire
 		break;
 	case EV_HELPME:
 		start_helping();
@@ -462,6 +562,7 @@ static void run_event(const EventDef *e) {
 // song flow
 // ---------------------------------------------------------------------------
 static void beat_hit(int beat) {
+	if (fireOn) firePulse = beat % 2 == 0 ? 1 : 0.6f;
 	if (camZooming && settings.camZooms && cam.zoom < 1.35f && beat % (int)beatsPerZoom == 0) {
 		cam.zoom += 0.015f;
 		hudZoom += 0.03f;
@@ -477,8 +578,9 @@ static void on_song_start(void) {
 	float time = 1.5f;
 	tween_num(&gameFadeA, 1, 0, time, EASE_LINEAR, 0, NULL, NULL);
 	tween_num(&hudAlpha, 0, 1, time - 0.25f, EASE_SINEOUT, 0.25f, NULL, NULL);
-	zoomTweenVal = cam.zoom;
-	zoomTween = tween_num(&zoomTweenVal, cam.zoom, cam.zoom - 0.1f, time, EASE_CIRCIN, 0, NULL, NULL);
+	// FlxTween.tween(FlxG.camera, {zoom}): defaultCamZoom stays 0.35, so once 'begin'
+	// enables camZooming the camera slowly pulls back to the wide stage shot
+	camTween = tween_num(&cam.zoom, cam.zoom, cam.zoom - 0.1f, time, EASE_CIRCIN, 0, NULL, NULL);
 	tween_to(&followX, followX - 700, time, EASE_CIRCIN, 0, NULL, NULL);
 	tween_to(&followY, followY - 100, time, EASE_CIRCIN, 0, NULL, NULL);
 }
@@ -540,6 +642,7 @@ static void update_notes(void) {
 		if (n->state >= 2) continue;
 		if (!n->player) {
 			if (n->state == 0 && pos >= n->t) {
+				camZooming = true;      // Psych: opponentNoteHit
 				if (!dad->stunned) {
 					chr_play(dad, singAnims[n->dir], true);
 					dad->holdTimer = 0;
@@ -755,6 +858,8 @@ void play_enter(void) {
 	shDarkness = 0;
 	shader_set(1, 0);
 	fireOn = false;
+	fire_fx_reset();
+	shader_set_tint(1, 1, 1);
 	hudAlpha = 1;
 	uiAlpha = 1;
 	uiVisible = true;
@@ -778,6 +883,7 @@ void play_enter(void) {
 	camZooming = false;
 	forcedPos = false;
 	zoomTween = 0;
+	camTween = 0;
 	defaultZoom = DEF_ZOOM;
 	defaultHudZoom = 0.8f;
 	hudZoom = 0.8f;
@@ -991,6 +1097,7 @@ void play_update(float dt) {
 	if (zoomTween) {
 		defaultZoom = zoomTweenVal;
 		cam.zoom = zoomTweenVal;
+		camZooming = false;
 	}
 
 	// input
@@ -1057,7 +1164,13 @@ void play_update(float dt) {
 	} else cam.shakeX = cam.shakeY = 0;
 
 	// shader palettes (the sky is drawn opaque with its alpha premultiplied)
-	shader_set(shStrength, shDarkness);
+	fire_fx_update(dt);
+	shader_set(shStrength, shDarkness - floorf(firePulse * 4) / 4 * 0.12f * fireFx);
+	// firelight: warm the shaded palettes (quantized so the LUTs rebuild rarely)
+	{
+		float w = floorf((fireFx * (0.7f + firePulse * 0.3f)) * 8 + 0.5f) / 8;
+		shader_set_tint(1 + 0.45f * w, 1 - 0.05f * w, 1 - 0.45f * w);
+	}
 
 	shader_set_alpha(sky_shade_index(), skyA);
 	// fire overlay belongs to camGame: hide it behind the tiktok camera / HUD fade
@@ -1200,6 +1313,7 @@ void play_draw(void) {
 		chr_draw(bf, &cam, white);
 		sheet_draw(&shTree, TREE_MAIN, cam_sx(&cam, -1200, 1.2f), cam_sy(&cam, 400, 1.2f), k, white, A31(treeA * 0.9f));
 		sheet_draw(&shTree, TREE_MAIN, cam_sx(&cam, 4000, 1.2f), cam_sy(&cam, 400, 1.2f), k, white, A31(treeA * 0.9f));
+		fire_fx_draw();
 		if (gameFlashA > 0) gfx_rect(0, 0, 256, 192, gameFlashColor, A31(gameFlashA));
 		if (gameFadeA > 0) gfx_rect(0, 0, 256, 192, 0, A31(gameFadeA));
 	}

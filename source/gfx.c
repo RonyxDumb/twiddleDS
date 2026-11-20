@@ -204,6 +204,33 @@ void gfx_rect(float x0, float y0, float x1, float y1, u16 color, int alpha) {
 	gfx_quad_raw(fx16(x0), fx16(y0), fx16(x1), fx16(y1), 0, 0, 0, 0, 0, 0, color, alpha);
 }
 
+// untextured quad with a vertical colour gradient (Gouraud shading)
+void gfx_rect_grad(float x0, float y0, float x1, float y1, u16 top, u16 bottom, int alpha) {
+	if (alpha <= 0) return;
+	if (alpha > 31) alpha = 31;
+	int X0 = fx16(clampf(x0, 0, 256)), X1 = fx16(clampf(x1, 0, 256));
+	int Y0 = fx16(clampf(y0, 0, 192)), Y1 = fx16(clampf(y1, 0, 192));
+	if (X1 <= X0 || Y1 <= Y0) return;
+	g_id = (g_id % 62) + 1;
+	int z = g_z;
+	g_z += 2;
+	GFX_POLY_FORMAT = POLY_ALPHA(alpha) | POLY_CULL_NONE | POLY_ID(g_id);
+	GFX_TEX_FORMAT = 0;
+	GFX_BEGIN = GL_QUADS;
+	GFX_COLOR = top;
+	GFX_VERTEX16 = ((u32)(Y0 & 0xFFFF) << 16) | (X0 & 0xFFFF);
+	GFX_VERTEX16 = z & 0xFFFF;
+	GFX_COLOR = bottom;
+	GFX_VERTEX16 = ((u32)(Y1 & 0xFFFF) << 16) | (X0 & 0xFFFF);
+	GFX_VERTEX16 = z & 0xFFFF;
+	GFX_VERTEX16 = ((u32)(Y1 & 0xFFFF) << 16) | (X1 & 0xFFFF);
+	GFX_VERTEX16 = z & 0xFFFF;
+	GFX_COLOR = top;
+	GFX_VERTEX16 = ((u32)(Y0 & 0xFFFF) << 16) | (X1 & 0xFFFF);
+	GFX_VERTEX16 = z & 0xFFFF;
+	GFX_END = 0;
+}
+
 // ---------------------------------------------------------------------------
 // sheets
 // ---------------------------------------------------------------------------
@@ -291,26 +318,32 @@ static int nShade;
 static u16 shadeBuf[16][256];
 static bool shadeDirty;
 static float shStrength = 1, shDarkness = 0;
-static u8 lut[32];
+static float shTint[3] = { 1, 1, 1 };     // per channel gain (fire light), applied after darkness
+static u8 lut[3][32];
 
-void shader_clear(void) { nShade = 0; shStrength = 1; shDarkness = 0; }
+void shader_clear(void) { nShade = 0; shStrength = 1; shDarkness = 0; shTint[0] = shTint[1] = shTint[2] = 1; }
+
+static void lut_build(u8 l[3][32], float alpha) {
+	for (int i = 0; i < 32; i++) {
+		float v = i / 31.0f * alpha;
+		v = ((v - 0.5f) * (shStrength > 0 ? shStrength : 0) + 0.5f);
+		v = clampf(v, 0, 1) * (1 - shDarkness);
+		for (int c = 0; c < 3; c++) l[c][i] = (u8)clampf(v * shTint[c] * 31.0f + 0.5f, 0, 31);
+	}
+}
 
 static void shader_build(int idx) {
 	ShadePal *p = &shadePals[idx];
-	u8 la[32];
-	const u8 *l = lut;
+	static u8 la[3][32];
+	u8 (*l)[32] = lut;
 	if (p->alpha < 0.999f) {
-		for (int i = 0; i < 32; i++) {
-			float v = i / 31.0f * p->alpha;
-			v = ((v - 0.5f) * (shStrength > 0 ? shStrength : 0) + 0.5f);
-			v = clampf(v, 0, 1) * (1 - shDarkness);
-			la[i] = (u8)clampf(v * 31.0f + 0.5f, 0, 31);
-		}
+		lut_build(la, p->alpha);
 		l = la;
 	}
+	const u8 *lr = l[0], *lg = l[1], *lb = l[2];
 	for (int i = 0; i < p->count; i++) {
 		u16 c = p->orig[i];
-		shadeBuf[idx][i] = l[c & 31] | (l[(c >> 5) & 31] << 5) | (l[(c >> 10) & 31] << 10);
+		shadeBuf[idx][i] = lr[c & 31] | (lg[(c >> 5) & 31] << 5) | (lb[(c >> 10) & 31] << 10);
 	}
 }
 
@@ -343,14 +376,7 @@ void shader_set_alpha(int idx, float a) {
 	shadeDirty = true;
 }
 
-static void shader_lut(void) {
-	for (int i = 0; i < 32; i++) {
-		float v = i / 31.0f;
-		v = ((v - 0.5f) * (shStrength > 0 ? shStrength : 0) + 0.5f);
-		v = clampf(v, 0, 1) * (1 - shDarkness);
-		lut[i] = (u8)clampf(v * 31.0f + 0.5f, 0, 31);
-	}
-}
+static void shader_lut(void) { lut_build(lut, 1); }
 
 void shader_register(u16 *orig, u32 palAddr, int count) {
 	if (nShade >= 16) return;
@@ -361,6 +387,16 @@ void shader_register(u16 *orig, u32 palAddr, int count) {
 	nShade++;
 	shader_lut();
 	shader_build(nShade - 1);
+	shadeDirty = true;
+}
+
+void shader_set_tint(float r, float g, float b) {
+	if (fabsf(r - shTint[0]) < 0.01f && fabsf(g - shTint[1]) < 0.01f && fabsf(b - shTint[2]) < 0.01f) return;
+	shTint[0] = r;
+	shTint[1] = g;
+	shTint[2] = b;
+	shader_lut();
+	for (int i = 0; i < nShade; i++) shader_build(i);
 	shadeDirty = true;
 }
 
