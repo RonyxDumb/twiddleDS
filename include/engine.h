@@ -95,6 +95,7 @@ void font_draw_centered(int id, float cx, float y, const char *s, u16 color, int
 typedef struct { u16 w, h; u16 *px; } Img16;
 void sub_init(void);
 void sub_present(void);                 // copy back buffer to VRAM (vblank)
+void sub_hold(bool on);                 // while on, sub_present keeps the previous frame
 u16 *sub_fb(void);
 void sub_clear(u16 color);
 void sub_fill(int x, int y, int w, int h, u16 color);

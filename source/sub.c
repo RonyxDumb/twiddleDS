@@ -5,6 +5,9 @@
 static u16 *fb;      // RAM back buffer
 static u16 *vfb;     // VRAM
 static volatile bool subDirtyFlag;
+static volatile bool subHeld;         // a staged redraw is in progress: keep showing the old frame
+
+void sub_hold(bool on) { subHeld = on; }
 
 void sub_init(void) {
 	videoSetModeSub(MODE_5_2D);
@@ -24,7 +27,7 @@ void sub_clear(u16 color) {
 }
 
 void sub_present(void) {
-	if (!subDirtyFlag) return;
+	if (!subDirtyFlag || subHeld) return;
 	DC_FlushRange(fb, 256 * 192 * 2);
 	dmaCopyWords(3, fb, vfb, 256 * 192 * 2);
 	subDirtyFlag = false;

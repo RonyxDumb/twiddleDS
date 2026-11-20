@@ -19,6 +19,12 @@
 #define BF_CAM_OFF_Y (-200.0f)
 #define DEF_ZOOM 0.35f
 
+// "position" from the character jsons (only the intro characters have one)
+static const float chrPos[CHR_COUNT][2] = {
+	[CHR_MAX] = { 30, 130 },
+	[CHR_NUGGETOG] = { 40, 320 },
+};
+
 static const char *singAnims[4] = { "singLEFT", "singDOWN", "singUP", "singRIGHT" };
 static const u32 laneKeys[4] = { KEY_LEFT | KEY_Y, KEY_DOWN | KEY_B, KEY_UP | KEY_X, KEY_RIGHT | KEY_A };
 
@@ -729,15 +735,25 @@ static int icon_index(const Character *c, bool losing) {
 
 // The bottom screen is redrawn in two levels: a full redraw when the layout
 // changes (mode, icons, battery colour) and a cheap partial redraw of the
-// score lines.
+// score lines. A full redraw costs most of a frame of software rendering, so
+// during gameplay it is split in stages over several frames; the back buffer
+// is only copied to VRAM once the last stage is done (sub_hold), so no
+// half-drawn screen is ever shown.
 static int subKey = -1;
+static int subStage = -1;            // next stage of a staged full redraw, -1 = idle
+static int subMode;
+static int tapShown;                 // help button drawn pressed (tap flash)
 
-static void draw_score(void) {
+static void draw_score_top(void) {
 	sub_fill(0, 108, 256, 68, RGB(12, 8, 10));
-	char b[64];
-	float accp = totalPlayed > 0 ? totalHit / totalPlayed * 100 : 0;
+	char b[32];
 	snprintf(b, sizeof(b), "Score: %d", score);
 	sub_text_centered(FONT_VCRBIG, 128, 112, b, RGB(255, 255, 255));
+}
+
+static void draw_score_bottom(void) {
+	char b[64];
+	float accp = totalPlayed > 0 ? totalHit / totalPlayed * 100 : 0;
 	snprintf(b, sizeof(b), "Misses: %d   Accuracy: %d.%02d%%", misses, (int)accp, (int)(accp * 100) % 100);
 	sub_text_centered(FONT_VCR, 128, 138, b, RGB(220, 220, 220));
 	snprintf(b, sizeof(b), "Sick %d  Good %d  Bad %d  Shit %d", hits[0], hits[1], hits[2], hits[3]);
@@ -747,52 +763,90 @@ static void draw_score(void) {
 #endif
 }
 
-static void draw_sub(void) {
-	int mode = paused ? 1 : dead ? 2 : (helpMode || (hereVisible && hereScale > 0.05f)) ? 3 : 0;
+static void draw_here(void) {
+	int x = (256 - imgHere.w) / 2, y = 70;
+	sub_fill(x, y, imgHere.w + 2, imgHere.h + 2, RGB(12, 8, 10));
+	sub_blit(&imgHere, x + (tapShown ? 2 : 0), y + (tapShown ? 2 : 0));
+}
+
+// one stage of the full redraw; returns false when the screen is complete
+static bool draw_sub_stage(int st) {
 	float hp = health_percent();
-	int key = mode | (pauseSel << 2) | ((lastTapFrame > 0) << 4) | (uiVisible << 5) |
-		(icon_index(dad, hp > 80) << 6) | (icon_index(bf, hp < 20) << 10) | ((int)battery_color() << 14);
-	if (key == subKey && mode == 0) {
-		draw_score();
-		return;
-	}
-	subKey = key;
-	sub_clear(RGB(12, 8, 10));
-	if (mode == 1) {
-		sub_text_centered(FONT_VCRBIG, 128, 12, "PAUSED", RGB(255, 255, 255));
+	if (st == 0) { sub_clear(RGB(12, 8, 10)); return true; }
+	switch (subMode) {
+	case 1: {
 		static const char *items[3] = { "Resume", "Restart Song", "Exit to menu" };
-		for (int i = 0; i < 3; i++) {
-			int y = 50 + i * 40;
+		if (st == 1) { sub_text_centered(FONT_VCRBIG, 128, 12, "PAUSED", RGB(255, 255, 255)); return true; }
+		if (st <= 4) {
+			int i = st - 2, y = 50 + i * 40;
 			sub_fill(28, y, 200, 32, i == pauseSel ? RGB(0xF4, 0xA6, 0x7A) : RGB(40, 30, 34));
 			sub_text_centered(FONT_VCRBIG, 128, y + 8, items[i], RGB(255, 255, 255));
+			return true;
 		}
 		char b[48];
 		snprintf(b, sizeof(b), "Blue balled: %d", deaths);
 		sub_text_centered(FONT_VCR, 128, 176, b, RGB(180, 180, 180));
-		return;
+		return false;
 	}
-	if (mode == 2) {
+	case 2:
 		sub_text_centered(FONT_VCRBIG, 128, 40, "GAME OVER", RGB(255, 80, 80));
 		sub_text_centered(FONT_VCR, 128, 100, "A: retry", RGB(255, 255, 255));
 		sub_text_centered(FONT_VCR, 128, 120, "B: exit to menu", RGB(255, 255, 255));
+		return false;
+	case 3:
+		if (st == 1) { sub_text_centered(FONT_VCRBIG, 128, 16, "TAP TO HELP HIM!", RGB(255, 255, 255)); return true; }
+		draw_here();
+		return false;
+	}
+	int bx = (256 - imgBar.w) / 2, by = 46;
+	switch (st) {
+	case 1: sub_text_centered(FONT_VCRBIG, 128, 6, "TWIDDLEFINGER", RGB(255, 255, 255)); return true;
+	case 2: if (uiVisible) sub_blit(&imgBar, bx, by); return true;
+	case 3: if (uiVisible) sub_blit_tint(&imgBarW, bx + 11, by + 23, imgBarW.w, battery_color()); return true;
+	case 4:
+		if (uiVisible) {
+			sub_blit(&imgIcons[icon_index(dad, hp > 80)], bx - 50, by + 2);
+			sub_blit_flip(&imgIcons[icon_index(bf, hp < 20)], bx + imgBar.w - 6, by + 2);   // iconP1 is flipped
+		}
+		return true;
+	case 5: draw_score_top(); return true;
+	case 6: draw_score_bottom(); return true;
+	default:
+		sub_text_centered(FONT_VCR, 128, 178, settings.botplay ? "BOTPLAY - START: pause" : "START: pause", RGB(120, 120, 120));
+		return false;
+	}
+}
+
+// now = finish the whole redraw in this frame (pause / game over: nothing else is running)
+static void draw_sub(bool now) {
+	int mode = paused ? 1 : dead ? 2 : (helpMode || (hereVisible && hereScale > 0.05f)) ? 3 : 0;
+	float hp = health_percent();
+	int key = mode | (pauseSel << 2) | (uiVisible << 5) |
+		(icon_index(dad, hp > 80) << 6) | (icon_index(bf, hp < 20) << 10) | ((int)battery_color() << 14);
+	if (key != subKey) {
+		subKey = key;
+		subMode = mode;
+		subStage = 0;
+		tapShown = lastTapFrame > 0;
+		sub_hold(true);
+	}
+	if (subStage < 0) {
+		if (mode == 0) {
+			draw_score_top();
+			draw_score_bottom();
+		} else if (mode == 3 && tapShown != (lastTapFrame > 0)) {
+			tapShown = lastTapFrame > 0;
+			draw_here();
+		}
 		return;
 	}
-	if (mode == 3) {
-		sub_text_centered(FONT_VCRBIG, 128, 16, "TAP TO HELP HIM!", RGB(255, 255, 255));
-		int flash = (lastTapFrame > 0);
-		sub_blit(&imgHere, (256 - imgHere.w) / 2 + (flash ? 2 : 0), 70 + (flash ? 2 : 0));
-		return;
-	}
-	sub_text_centered(FONT_VCRBIG, 128, 6, "TWIDDLEFINGER", RGB(255, 255, 255));
-	if (uiVisible) {
-		int bx = (256 - imgBar.w) / 2, by = 46;
-		sub_blit(&imgBar, bx, by);
-		sub_blit_tint(&imgBarW, bx + 11, by + 23, imgBarW.w, battery_color());
-		sub_blit(&imgIcons[icon_index(dad, hp > 80)], bx - 50, by + 2);
-		sub_blit_flip(&imgIcons[icon_index(bf, hp < 20)], bx + imgBar.w - 6, by + 2);   // iconP1 is flipped
-	}
-	draw_score();
-	sub_text_centered(FONT_VCR, 128, 178, settings.botplay ? "BOTPLAY - START: pause" : "START: pause", RGB(120, 120, 120));
+	do {
+		if (!draw_sub_stage(subStage++)) {
+			subStage = -1;
+			sub_hold(false);
+			break;
+		}
+	} while (now);
 }
 
 // ---------------------------------------------------------------------------
@@ -830,8 +884,9 @@ void play_enter(void) {
 	for (int i = 0; i < CHR_COUNT; i++) chr_load(&chars[i], i, i != CHR_MAXPRO && i != CHR_REDMAX && i != CHR_MAX);
 	for (int i = 0; i < CHR_COUNT; i++) {
 		bool player = chars[i].isPlayer;
-		chars[i].x = player ? BF_X : DAD_X;
-		chars[i].y = player ? BF_Y : DAD_Y;
+		// stage position + the character json "position" offset (Psych startCharacterPos)
+		chars[i].x = (player ? BF_X : DAD_X) + chrPos[i][0];
+		chars[i].y = (player ? BF_Y : DAD_Y) + chrPos[i][1];
 	}
 	img_load(&imgHere, "/sub/here.b16");
 	img_load(&imgBar, "/sub/hpbar.b16");
@@ -920,6 +975,9 @@ void play_enter(void) {
 
 	subDirty = true;
 	subKey = -1;
+	subStage = -1;
+	tapShown = 0;
+	sub_hold(false);
 	g_fade = 0;
 	g_subFade = 1;     // camHUD starts invisible (introCam) and fades in with the song
 }
@@ -1031,17 +1089,17 @@ static void update_dead(float dt) {
 void play_update(float dt) {
 	if (dead) {
 		update_dead(dt);
-		if (subDirty) { draw_sub(); subDirty = false; }
+		if (subDirty) { draw_sub(true); subDirty = false; }
 		return;
 	}
 	if (paused) {
 		update_pause(dt);
-		if (subDirty) { draw_sub(); subDirty = false; }
+		if (subDirty) { draw_sub(true); subDirty = false; }
 		return;
 	}
 	if ((kDown & KEY_START) && !songEnded && (songStarted || countdownOn)) {
 		open_pause();
-		draw_sub();
+		draw_sub(true);
 		subDirty = false;
 		return;
 	}
@@ -1213,8 +1271,10 @@ void play_update(float dt) {
 		return;
 	}
 
-	if (subDirty && ++subTimer >= 12) {
-		draw_sub();
+	if (subStage >= 0) draw_sub(false);             // staged full redraw in progress
+	else if (subMode == 3 && subKey >= 0 && tapShown != (lastTapFrame > 0)) draw_sub(false);   // tap flash, cheap
+	else if (subDirty && ++subTimer >= 12) {
+		draw_sub(false);
 		subDirty = false;
 		subTimer = 0;
 	}
