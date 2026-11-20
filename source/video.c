@@ -24,6 +24,14 @@ static int blendEva = 16;
 static bool ovVisible = true;
 static int winX0, winX1;
 
+// affine parameters (latched in vblank) + heat haze: an HBlank DMA rewrites
+// BG2X before every scanline so the fire layer ripples like hot air
+#define HDMA_CH 1
+static s32 affPA = 256, affX, affY;
+static float waveAmp, wavePhase;
+static s32 waveTab[193];
+static bool hdmaOn;
+
 // decoder state
 enum { D_IDLE, D_READ, D_LZ, D_READY };
 static int dstate;
@@ -69,8 +77,15 @@ static void lz_step(const u8 *src, u8 *dst, u32 budget) {
 	lzBits = bits;
 }
 
+static void hdma_stop(void) {
+	if (!hdmaOn) return;
+	DMA_CR(HDMA_CH) = 0;
+	hdmaOn = false;
+}
+
 static void video_regs(void) {
 	if (!active) {
+		hdma_stop();
 		bgHide(bgid);
 		REG_DISPCNT &= ~DISPLAY_WIN0_ON;
 		BG_PALETTE[0] = 0;
@@ -154,6 +169,10 @@ bool video_open(const char *path, bool loop, bool ov) {
 }
 
 void video_close(void) {
+	hdma_stop();
+	affPA = 256;
+	affX = affY = 0;
+	waveAmp = 0;
 	if (vf) fclose(vf);
 	vf = NULL;
 	if (offs) free(offs);
@@ -236,8 +255,44 @@ bool video_update(float ms) {
 	return true;
 }
 
+// sine in 1/4096, 64 entries per turn
+static const s16 sin64[64] = {
+	0, 401, 799, 1189, 1567, 1931, 2276, 2598, 2896, 3166, 3406, 3612, 3784, 3920, 4017, 4076,
+	4096, 4076, 4017, 3920, 3784, 3612, 3406, 3166, 2896, 2598, 2276, 1931, 1567, 1189, 799, 401,
+	0, -401, -799, -1189, -1567, -1931, -2276, -2598, -2896, -3166, -3406, -3612, -3784, -3920, -4017, -4076,
+	-4096, -4076, -4017, -3920, -3784, -3612, -3406, -3166, -2896, -2598, -2276, -1931, -1567, -1189, -799, -401 };
+
+static void affine_vblank(void) {
+	REG_BG2PA = affPA; REG_BG2PB = 0; REG_BG2PC = 0; REG_BG2PD = affPA;
+	REG_BG2Y = affY;
+	bool wave = waveAmp > 0.05f && overlay && ovVisible && shown >= 0;
+	if (!wave) {
+		hdma_stop();
+		REG_BG2X = affX;
+		return;
+	}
+	// offset in texture units (20.8): screen px * pa
+	s32 amp = (s32)(waveAmp * affPA);
+	int ph = (int)(wavePhase * 64.0f) & 63;
+	for (int y = 0; y < 193; y++) {
+		// two octaves: a slow swell and a faster shimmer
+		int a = sin64[(y + ph) & 63];
+		int b = sin64[((y * 3) + ph * 2) & 63];
+		waveTab[y] = affX + ((amp * (a * 3 + b) / 4) >> 12);
+	}
+	DC_FlushRange(waveTab, sizeof(waveTab));
+	DMA_CR(HDMA_CH) = 0;
+	REG_BG2X = waveTab[0];
+	DMA_SRC(HDMA_CH) = (u32)&waveTab[1];
+	DMA_DEST(HDMA_CH) = (u32)&REG_BG2X;
+	DMA_CR(HDMA_CH) = DMA_ENABLE | DMA_REPEAT | DMA_START_HBL | DMA_32_BIT | DMA_DST_RESET | 1;
+	hdmaOn = true;
+}
+
 void video_vblank(void) {
-	if (bgid < 0 || !active || !pending) return;
+	if (bgid < 0 || !active) return;
+	affine_vblank();
+	if (!pending) return;
 	DC_FlushRange(fbuf[front], vw * vh);
 	dmaCopy(palFront, BG_PALETTE, 512);
 	u8 *dst = (u8 *)0x06000000;
@@ -252,10 +307,14 @@ void video_vblank(void) {
 
 // affine mapping: texture = pa * screen + (px, py)
 void video_set_affine(float pa, float px, float py) {
-	int p = (int)(pa * 256.0f);
-	REG_BG2PA = p; REG_BG2PB = 0; REG_BG2PC = 0; REG_BG2PD = p;
-	REG_BG2X = (int)(px * 256.0f);
-	REG_BG2Y = (int)(py * 256.0f);
+	affPA = (int)(pa * 256.0f);
+	affX = (int)(px * 256.0f);
+	affY = (int)(py * 256.0f);
+}
+
+void video_set_wave(float amp, float phase) {
+	waveAmp = amp;
+	wavePhase = phase - floorf(phase);
 }
 
 void video_set_blend(int eva) {

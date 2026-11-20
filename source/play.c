@@ -19,6 +19,12 @@
 #define BF_CAM_OFF_Y (-200.0f)
 #define DEF_ZOOM 0.35f
 
+// "position" from the character jsons (only the intro characters have one)
+static const float chrPos[CHR_COUNT][2] = {
+	[CHR_MAX] = { 30, 130 },
+	[CHR_NUGGETOG] = { 40, 320 },
+};
+
 static const char *singAnims[4] = { "singLEFT", "singDOWN", "singUP", "singRIGHT" };
 static const u32 laneKeys[4] = { KEY_LEFT | KEY_Y, KEY_DOWN | KEY_B, KEY_UP | KEY_X, KEY_RIGHT | KEY_A };
 
@@ -34,7 +40,8 @@ static float followX, followY;
 static float defaultZoom, hudZoom, defaultHudZoom = 0.8f;
 static bool camZooming, forcedPos;
 static float beatsPerZoom = 4;
-static int zoomTween;
+static int zoomTween;                // FlxTween.num that also drives defaultCamZoom
+static int camTween;                 // FlxTween on FlxG.camera.zoom only (defaultCamZoom untouched)
 static float zoomTweenVal;
 static float shakeTime;
 
@@ -42,6 +49,24 @@ static float shakeTime;
 static float skyA, stageA, treeA, fakeBgA;
 static float shStrength, shDarkness;
 static bool fireOn;
+
+// DS-only fire effects: warm palette light, beat pulse, heat haze on the
+// fire layer (HBlank DMA), rising embers and a Gouraud glow from the street
+#define EMBERS 48
+// fixed point (no FPU on the ARM9): positions in 1/16 px, speeds in 1/16 px per second,
+// life in ms, phase as an index into a 64 entry sine table
+typedef struct { s32 x, y; s16 vx, vy; u16 life, max; u8 phase, size; } Ember;
+static Ember embers[EMBERS];
+static float fireFx;                 // 0..1 intensity of the extra effects
+static float firePulse;              // beat pulse, decays
+static float fireTime;
+static float lastCamX, lastCamY;
+static u32 fireMs;
+static const s8 sin64s[64] = {
+	0, 12, 25, 37, 49, 60, 71, 81, 90, 98, 106, 112, 117, 122, 125, 126,
+	127, 126, 125, 122, 117, 112, 106, 98, 90, 81, 71, 60, 49, 37, 25, 12,
+	0, -12, -25, -37, -49, -60, -71, -81, -90, -98, -106, -112, -117, -122, -125, -126,
+	-127, -126, -125, -122, -117, -112, -106, -98, -90, -81, -71, -60, -49, -37, -25, -12 };
 
 
 // hud
@@ -237,14 +262,91 @@ static void start_fire(void) {
 	if (video_open("nitro:/vid/fire.vid", true, true)) {
 		vidKind = VID_FIRE;
 		vidStart = songPos;
-		video_set_blend(5);     // alpha 0.3, additive
+		video_set_blend(8);     // mod: alpha 0.3 additive *before* the dark shader; on DS it is added after it
 		fireOn = true;
+		tween_cancel_target(&fireFx);
+		tween_to(&fireFx, 1, 0.6f, EASE_SINEOUT, 0, NULL, NULL);
+		firePulse = 1;
+	}
+}
+
+static void ember_spawn(Ember *e, bool anywhere) {
+	e->x = (rand() % 256) << 4;
+	e->y = anywhere ? (rand() % 192) << 4 : (192 + rand() % 10) << 4;
+	e->vx = (rand() % 320) - 160;
+	e->vy = -(288 + rand() % 640);
+	e->max = 2500 + rand() % 3000;
+	e->life = anywhere ? rand() % e->max : 0;
+	e->phase = rand() & 63;
+	e->size = 1 + (rand() % 3 == 0);
+}
+
+static void fire_fx_update(float dt) {
+	if ((!fireOn || vidKind != VID_FIRE) && fireFx > 0) {
+		tween_cancel_target(&fireFx);
+		fireFx = 0;
+	}
+	firePulse *= expf(-dt * 5);
+	fireTime += dt;
+	int dms = (int)(dt * 1000);
+	fireMs += dms;
+	// embers live in screen space: follow the camera with a bit of parallax
+	s32 camDX = (s32)((cam.camX - lastCamX) * cam.zoom * KDS * 1.3f * 16);
+	s32 camDY = (s32)((cam.camY - lastCamY) * cam.zoom * KDS * 1.3f * 16);
+	lastCamX = cam.camX;
+	lastCamY = cam.camY;
+	if (fireFx <= 0) return;
+	int boost = 256 + (int)(firePulse * 205);       // rise faster on the beat (8.8)
+	int swayT = (fireMs * 23 / 1000) & 63;            // ~0.37 Hz sway
+	for (int i = 0; i < EMBERS; i++) {
+		Ember *e = &embers[i];
+		e->life += dms;
+		if (e->life >= e->max || e->y < -64) { ember_spawn(e, false); continue; }
+		int sway = sin64s[(swayT + e->phase) & 63] * 224 / 127;   // +-14 px/s
+		e->x += (e->vx + sway) * dms / 1000 - camDX;
+		e->y += (e->vy * boost >> 8) * dms / 1000 - camDY;
+		if (e->x < -64) e->x += 264 << 4;
+		if (e->x > 260 << 4) e->x -= 264 << 4;
+	}
+	// heat haze on the fire layer, stronger on the beat
+	video_set_wave((1.2f + firePulse * 1.6f) * fireFx, fireTime * 0.9f);
+	video_set_blend(8 + (int)(firePulse * 6 * fireFx + 0.5f));
+}
+
+static void fire_fx_draw(void) {
+	if (fireFx <= 0.01f) return;
+	// warm glow rising from the street (vertex colours), pulsing with the beat
+	int ga = (int)((6 + firePulse * 6) * fireFx);
+	// two stacked gradients over the whole screen, so there is no visible edge
+	gfx_rect_grad(0, 0, 256, 96, RGB(40, 0, 0), RGB(150, 30, 0), ga);
+	gfx_rect_grad(0, 96, 256, 192, RGB(150, 30, 0), RGB(255, 110, 20), ga);
+	// embers: white-hot -> orange -> deep red as they cool
+	int fx = (int)(fireFx * 256);
+	int flickT = (fireMs * 173 / 1000) & 63;          // ~2.7 Hz flicker
+	for (int i = 0; i < EMBERS; i++) {
+		Ember *e = &embers[i];
+		int t = e->life * 256 / e->max;                // 0..255
+		u16 c = t < 64 ? RGB(255, 240, 150) : t < 154 ? RGB(255, 150, 40) : RGB(220, 50, 10);
+		int a = t < 26 ? t * 31 / 26 : 31 - (t - 26) * 31 / 230;
+		a = a * (224 + sin64s[(flickT + e->phase * 5) & 63] / 4) >> 8;
+		a = a * fx >> 8;
+		int sz = (e->size * 16 * (256 - t * 2 / 5) >> 8) + 8;     // 1/16 px
+		int x0 = e->x - sz / 2, y0 = e->y - sz / 2;
+		gfx_quad_raw(x0, y0, x0 + sz, y0 + sz, 0, 0, 0, 0, 0, 0, c, a);
 	}
 }
 
 static void stop_video(void) {
 	video_close();
 	vidKind = VID_NONE;
+}
+
+static void fire_fx_reset(void) {
+	fireFx = firePulse = fireTime = 0;
+	fireMs = 0;
+	for (int i = 0; i < EMBERS; i++) ember_spawn(&embers[i], true);
+	lastCamX = cam.camX;
+	lastCamY = cam.camY;
 }
 
 static void red_mode(void);
@@ -349,6 +451,8 @@ static void run_event(const EventDef *e) {
 	case EV_BEGIN:
 		tween_cancel_target(&followX);
 		tween_cancel_target(&followY);
+		tween_cancel(camTween);
+		camTween = 0;
 		tween_cancel(zoomTween);
 		zoomTween = 0;
 		forcedPos = false;
@@ -361,8 +465,8 @@ static void run_event(const EventDef *e) {
 		tween_to(&bf->x, bf->x + 700, d, EASE_CUBEOUT, 0, NULL, NULL);
 		tween_cancel(zoomTween);
 		zoomTween = 0;
-		zoomTweenVal = cam.zoom;
-		zoomTween = tween_num(&zoomTweenVal, cam.zoom, cam.zoom + 0.3f, d, EASE_CUBEINOUT, 0, NULL, NULL);
+		tween_cancel_target(&cam.zoom);
+		camTween = tween_num(&cam.zoom, cam.zoom, cam.zoom + 0.3f, d, EASE_CUBEINOUT, 0, NULL, NULL);
 		tween_to(&hudAlpha, 0.5f, d, EASE_CUBEINOUT, 0, NULL, NULL);
 		tween_to(&fakeBgA, 0, d + 0.1f, EASE_LINEAR, 0, NULL, NULL);
 		tween_to(&helpBarTX, -1280 / 3.0f, d + 0.1f, EASE_LINEAR, 0, NULL, NULL);
@@ -380,8 +484,9 @@ static void run_event(const EventDef *e) {
 		tween_cancel_target(&hudAlpha);
 		tween_to(&hudAlpha, 1, 0.15f, EASE_CUBEOUT, 0, NULL, NULL);
 		tween_cancel(zoomTween);
-		zoomTweenVal = cam.zoom;
-		zoomTween = tween_num(&zoomTweenVal, cam.zoom, defaultZoom, 0.15f, EASE_CUBEOUT, 0, NULL, NULL);
+		zoomTween = 0;
+		tween_cancel_target(&cam.zoom);
+		camTween = tween_num(&cam.zoom, cam.zoom, defaultZoom, 0.15f, EASE_CUBEOUT, 0, NULL, NULL);
 		break;
 	case EV_BEATSPERZOOM:
 		beatsPerZoom = e->a;
@@ -401,6 +506,7 @@ static void run_event(const EventDef *e) {
 		start_fire();
 		flash_game(RGB(255, 0, 0), 0.4f);
 		cam.zoom += 0.2f;
+		shakeTime = 0.35f;       // DS extra: impact shake when the street catches fire
 		break;
 	case EV_HELPME:
 		start_helping();
@@ -462,6 +568,7 @@ static void run_event(const EventDef *e) {
 // song flow
 // ---------------------------------------------------------------------------
 static void beat_hit(int beat) {
+	if (fireOn) firePulse = beat % 2 == 0 ? 1 : 0.6f;
 	if (camZooming && settings.camZooms && cam.zoom < 1.35f && beat % (int)beatsPerZoom == 0) {
 		cam.zoom += 0.015f;
 		hudZoom += 0.03f;
@@ -477,8 +584,9 @@ static void on_song_start(void) {
 	float time = 1.5f;
 	tween_num(&gameFadeA, 1, 0, time, EASE_LINEAR, 0, NULL, NULL);
 	tween_num(&hudAlpha, 0, 1, time - 0.25f, EASE_SINEOUT, 0.25f, NULL, NULL);
-	zoomTweenVal = cam.zoom;
-	zoomTween = tween_num(&zoomTweenVal, cam.zoom, cam.zoom - 0.1f, time, EASE_CIRCIN, 0, NULL, NULL);
+	// FlxTween.tween(FlxG.camera, {zoom}): defaultCamZoom stays 0.35, so once 'begin'
+	// enables camZooming the camera slowly pulls back to the wide stage shot
+	camTween = tween_num(&cam.zoom, cam.zoom, cam.zoom - 0.1f, time, EASE_CIRCIN, 0, NULL, NULL);
 	tween_to(&followX, followX - 700, time, EASE_CIRCIN, 0, NULL, NULL);
 	tween_to(&followY, followY - 100, time, EASE_CIRCIN, 0, NULL, NULL);
 }
@@ -540,6 +648,7 @@ static void update_notes(void) {
 		if (n->state >= 2) continue;
 		if (!n->player) {
 			if (n->state == 0 && pos >= n->t) {
+				camZooming = true;      // Psych: opponentNoteHit
 				if (!dad->stunned) {
 					chr_play(dad, singAnims[n->dir], true);
 					dad->holdTimer = 0;
@@ -626,15 +735,25 @@ static int icon_index(const Character *c, bool losing) {
 
 // The bottom screen is redrawn in two levels: a full redraw when the layout
 // changes (mode, icons, battery colour) and a cheap partial redraw of the
-// score lines.
+// score lines. A full redraw costs most of a frame of software rendering, so
+// during gameplay it is split in stages over several frames; the back buffer
+// is only copied to VRAM once the last stage is done (sub_hold), so no
+// half-drawn screen is ever shown.
 static int subKey = -1;
+static int subStage = -1;            // next stage of a staged full redraw, -1 = idle
+static int subMode;
+static int tapShown;                 // help button drawn pressed (tap flash)
 
-static void draw_score(void) {
+static void draw_score_top(void) {
 	sub_fill(0, 108, 256, 68, RGB(12, 8, 10));
-	char b[64];
-	float accp = totalPlayed > 0 ? totalHit / totalPlayed * 100 : 0;
+	char b[32];
 	snprintf(b, sizeof(b), "Score: %d", score);
 	sub_text_centered(FONT_VCRBIG, 128, 112, b, RGB(255, 255, 255));
+}
+
+static void draw_score_bottom(void) {
+	char b[64];
+	float accp = totalPlayed > 0 ? totalHit / totalPlayed * 100 : 0;
 	snprintf(b, sizeof(b), "Misses: %d   Accuracy: %d.%02d%%", misses, (int)accp, (int)(accp * 100) % 100);
 	sub_text_centered(FONT_VCR, 128, 138, b, RGB(220, 220, 220));
 	snprintf(b, sizeof(b), "Sick %d  Good %d  Bad %d  Shit %d", hits[0], hits[1], hits[2], hits[3]);
@@ -644,52 +763,90 @@ static void draw_score(void) {
 #endif
 }
 
-static void draw_sub(void) {
-	int mode = paused ? 1 : dead ? 2 : (helpMode || (hereVisible && hereScale > 0.05f)) ? 3 : 0;
+static void draw_here(void) {
+	int x = (256 - imgHere.w) / 2, y = 70;
+	sub_fill(x, y, imgHere.w + 2, imgHere.h + 2, RGB(12, 8, 10));
+	sub_blit(&imgHere, x + (tapShown ? 2 : 0), y + (tapShown ? 2 : 0));
+}
+
+// one stage of the full redraw; returns false when the screen is complete
+static bool draw_sub_stage(int st) {
 	float hp = health_percent();
-	int key = mode | (pauseSel << 2) | ((lastTapFrame > 0) << 4) | (uiVisible << 5) |
-		(icon_index(dad, hp > 80) << 6) | (icon_index(bf, hp < 20) << 10) | ((int)battery_color() << 14);
-	if (key == subKey && mode == 0) {
-		draw_score();
-		return;
-	}
-	subKey = key;
-	sub_clear(RGB(12, 8, 10));
-	if (mode == 1) {
-		sub_text_centered(FONT_VCRBIG, 128, 12, "PAUSED", RGB(255, 255, 255));
+	if (st == 0) { sub_clear(RGB(12, 8, 10)); return true; }
+	switch (subMode) {
+	case 1: {
 		static const char *items[3] = { "Resume", "Restart Song", "Exit to menu" };
-		for (int i = 0; i < 3; i++) {
-			int y = 50 + i * 40;
+		if (st == 1) { sub_text_centered(FONT_VCRBIG, 128, 12, "PAUSED", RGB(255, 255, 255)); return true; }
+		if (st <= 4) {
+			int i = st - 2, y = 50 + i * 40;
 			sub_fill(28, y, 200, 32, i == pauseSel ? RGB(0xF4, 0xA6, 0x7A) : RGB(40, 30, 34));
 			sub_text_centered(FONT_VCRBIG, 128, y + 8, items[i], RGB(255, 255, 255));
+			return true;
 		}
 		char b[48];
 		snprintf(b, sizeof(b), "Blue balled: %d", deaths);
 		sub_text_centered(FONT_VCR, 128, 176, b, RGB(180, 180, 180));
-		return;
+		return false;
 	}
-	if (mode == 2) {
+	case 2:
 		sub_text_centered(FONT_VCRBIG, 128, 40, "GAME OVER", RGB(255, 80, 80));
 		sub_text_centered(FONT_VCR, 128, 100, "A: retry", RGB(255, 255, 255));
 		sub_text_centered(FONT_VCR, 128, 120, "B: exit to menu", RGB(255, 255, 255));
+		return false;
+	case 3:
+		if (st == 1) { sub_text_centered(FONT_VCRBIG, 128, 16, "TAP TO HELP HIM!", RGB(255, 255, 255)); return true; }
+		draw_here();
+		return false;
+	}
+	int bx = (256 - imgBar.w) / 2, by = 46;
+	switch (st) {
+	case 1: sub_text_centered(FONT_VCRBIG, 128, 6, "TWIDDLEFINGER", RGB(255, 255, 255)); return true;
+	case 2: if (uiVisible) sub_blit(&imgBar, bx, by); return true;
+	case 3: if (uiVisible) sub_blit_tint(&imgBarW, bx + 11, by + 23, imgBarW.w, battery_color()); return true;
+	case 4:
+		if (uiVisible) {
+			sub_blit(&imgIcons[icon_index(dad, hp > 80)], bx - 50, by + 2);
+			sub_blit_flip(&imgIcons[icon_index(bf, hp < 20)], bx + imgBar.w - 6, by + 2);   // iconP1 is flipped
+		}
+		return true;
+	case 5: draw_score_top(); return true;
+	case 6: draw_score_bottom(); return true;
+	default:
+		sub_text_centered(FONT_VCR, 128, 178, settings.botplay ? "BOTPLAY - START: pause" : "START: pause", RGB(120, 120, 120));
+		return false;
+	}
+}
+
+// now = finish the whole redraw in this frame (pause / game over: nothing else is running)
+static void draw_sub(bool now) {
+	int mode = paused ? 1 : dead ? 2 : (helpMode || (hereVisible && hereScale > 0.05f)) ? 3 : 0;
+	float hp = health_percent();
+	int key = mode | (pauseSel << 2) | (uiVisible << 5) |
+		(icon_index(dad, hp > 80) << 6) | (icon_index(bf, hp < 20) << 10) | ((int)battery_color() << 14);
+	if (key != subKey) {
+		subKey = key;
+		subMode = mode;
+		subStage = 0;
+		tapShown = lastTapFrame > 0;
+		sub_hold(true);
+	}
+	if (subStage < 0) {
+		if (mode == 0) {
+			draw_score_top();
+			draw_score_bottom();
+		} else if (mode == 3 && tapShown != (lastTapFrame > 0)) {
+			tapShown = lastTapFrame > 0;
+			draw_here();
+		}
 		return;
 	}
-	if (mode == 3) {
-		sub_text_centered(FONT_VCRBIG, 128, 16, "TAP TO HELP HIM!", RGB(255, 255, 255));
-		int flash = (lastTapFrame > 0);
-		sub_blit(&imgHere, (256 - imgHere.w) / 2 + (flash ? 2 : 0), 70 + (flash ? 2 : 0));
-		return;
-	}
-	sub_text_centered(FONT_VCRBIG, 128, 6, "TWIDDLEFINGER", RGB(255, 255, 255));
-	if (uiVisible) {
-		int bx = (256 - imgBar.w) / 2, by = 46;
-		sub_blit(&imgBar, bx, by);
-		sub_blit_tint(&imgBarW, bx + 11, by + 23, imgBarW.w, battery_color());
-		sub_blit(&imgIcons[icon_index(dad, hp > 80)], bx - 50, by + 2);
-		sub_blit_flip(&imgIcons[icon_index(bf, hp < 20)], bx + imgBar.w - 6, by + 2);   // iconP1 is flipped
-	}
-	draw_score();
-	sub_text_centered(FONT_VCR, 128, 178, settings.botplay ? "BOTPLAY - START: pause" : "START: pause", RGB(120, 120, 120));
+	do {
+		if (!draw_sub_stage(subStage++)) {
+			subStage = -1;
+			sub_hold(false);
+			break;
+		}
+	} while (now);
 }
 
 // ---------------------------------------------------------------------------
@@ -727,8 +884,9 @@ void play_enter(void) {
 	for (int i = 0; i < CHR_COUNT; i++) chr_load(&chars[i], i, i != CHR_MAXPRO && i != CHR_REDMAX && i != CHR_MAX);
 	for (int i = 0; i < CHR_COUNT; i++) {
 		bool player = chars[i].isPlayer;
-		chars[i].x = player ? BF_X : DAD_X;
-		chars[i].y = player ? BF_Y : DAD_Y;
+		// stage position + the character json "position" offset (Psych startCharacterPos)
+		chars[i].x = (player ? BF_X : DAD_X) + chrPos[i][0];
+		chars[i].y = (player ? BF_Y : DAD_Y) + chrPos[i][1];
 	}
 	img_load(&imgHere, "/sub/here.b16");
 	img_load(&imgBar, "/sub/hpbar.b16");
@@ -755,6 +913,8 @@ void play_enter(void) {
 	shDarkness = 0;
 	shader_set(1, 0);
 	fireOn = false;
+	fire_fx_reset();
+	shader_set_tint(1, 1, 1);
 	hudAlpha = 1;
 	uiAlpha = 1;
 	uiVisible = true;
@@ -778,6 +938,7 @@ void play_enter(void) {
 	camZooming = false;
 	forcedPos = false;
 	zoomTween = 0;
+	camTween = 0;
 	defaultZoom = DEF_ZOOM;
 	defaultHudZoom = 0.8f;
 	hudZoom = 0.8f;
@@ -814,6 +975,9 @@ void play_enter(void) {
 
 	subDirty = true;
 	subKey = -1;
+	subStage = -1;
+	tapShown = 0;
+	sub_hold(false);
 	g_fade = 0;
 	g_subFade = 1;     // camHUD starts invisible (introCam) and fades in with the song
 }
@@ -925,17 +1089,17 @@ static void update_dead(float dt) {
 void play_update(float dt) {
 	if (dead) {
 		update_dead(dt);
-		if (subDirty) { draw_sub(); subDirty = false; }
+		if (subDirty) { draw_sub(true); subDirty = false; }
 		return;
 	}
 	if (paused) {
 		update_pause(dt);
-		if (subDirty) { draw_sub(); subDirty = false; }
+		if (subDirty) { draw_sub(true); subDirty = false; }
 		return;
 	}
 	if ((kDown & KEY_START) && !songEnded && (songStarted || countdownOn)) {
 		open_pause();
-		draw_sub();
+		draw_sub(true);
 		subDirty = false;
 		return;
 	}
@@ -991,6 +1155,7 @@ void play_update(float dt) {
 	if (zoomTween) {
 		defaultZoom = zoomTweenVal;
 		cam.zoom = zoomTweenVal;
+		camZooming = false;
 	}
 
 	// input
@@ -1057,7 +1222,13 @@ void play_update(float dt) {
 	} else cam.shakeX = cam.shakeY = 0;
 
 	// shader palettes (the sky is drawn opaque with its alpha premultiplied)
-	shader_set(shStrength, shDarkness);
+	fire_fx_update(dt);
+	shader_set(shStrength, shDarkness - floorf(firePulse * 4) / 4 * 0.12f * fireFx);
+	// firelight: warm the shaded palettes (quantized so the LUTs rebuild rarely)
+	{
+		float w = floorf((fireFx * (0.7f + firePulse * 0.3f)) * 8 + 0.5f) / 8;
+		shader_set_tint(1 + 0.45f * w, 1 - 0.05f * w, 1 - 0.45f * w);
+	}
 
 	shader_set_alpha(sky_shade_index(), skyA);
 	// fire overlay belongs to camGame: hide it behind the tiktok camera / HUD fade
@@ -1100,8 +1271,10 @@ void play_update(float dt) {
 		return;
 	}
 
-	if (subDirty && ++subTimer >= 12) {
-		draw_sub();
+	if (subStage >= 0) draw_sub(false);             // staged full redraw in progress
+	else if (subMode == 3 && subKey >= 0 && tapShown != (lastTapFrame > 0)) draw_sub(false);   // tap flash, cheap
+	else if (subDirty && ++subTimer >= 12) {
+		draw_sub(false);
 		subDirty = false;
 		subTimer = 0;
 	}
@@ -1200,6 +1373,7 @@ void play_draw(void) {
 		chr_draw(bf, &cam, white);
 		sheet_draw(&shTree, TREE_MAIN, cam_sx(&cam, -1200, 1.2f), cam_sy(&cam, 400, 1.2f), k, white, A31(treeA * 0.9f));
 		sheet_draw(&shTree, TREE_MAIN, cam_sx(&cam, 4000, 1.2f), cam_sy(&cam, 400, 1.2f), k, white, A31(treeA * 0.9f));
+		fire_fx_draw();
 		if (gameFlashA > 0) gfx_rect(0, 0, 256, 192, gameFlashColor, A31(gameFlashA));
 		if (gameFadeA > 0) gfx_rect(0, 0, 256, 192, 0, A31(gameFadeA));
 	}
